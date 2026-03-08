@@ -17,6 +17,7 @@ from bub.app.runtime import AppRuntime
 from bub.channels.base import BaseChannel, exclude_none
 from bub.channels.utils import resolve_proxy
 from bub.core.agent_loop import LoopResult
+from bub.core.inbound import InboundPayload
 
 NO_ACCESS_MESSAGE = "You are not allowed to chat with me. Please deploy your own instance of Bub."
 
@@ -164,7 +165,7 @@ class TelegramChannel(BaseChannel[Message]):
             self._app = None
             logger.info("telegram.stopped")
 
-    async def get_session_prompt(self, message: Message) -> tuple[str, str]:
+    async def get_session_prompt(self, message: Message) -> tuple[str, InboundPayload]:
         chat_id = str(message.chat_id)
         session_id = f"{self.name}:{chat_id}"
         content, media = self._parse_message(message)
@@ -173,7 +174,14 @@ class TelegramChannel(BaseChannel[Message]):
 
         # Pass comma commands directly to the input handler
         if content.strip().startswith(","):
-            return session_id, content
+            return session_id, InboundPayload(
+                raw_text=content,
+                model_prompt=content,
+                display_text=content,
+                metadata={"chat_id": chat_id},
+                is_command=True,
+                immediate=True,
+            )
 
         metadata: dict[str, Any] = {
             "message_id": message.message_id,
@@ -196,7 +204,14 @@ class TelegramChannel(BaseChannel[Message]):
             metadata["reply_to_message"] = reply_meta
 
         metadata_json = json.dumps({"message": content, "chat_id": chat_id, **metadata}, ensure_ascii=False)
-        return session_id, metadata_json
+        return session_id, InboundPayload(
+            raw_text=content,
+            model_prompt=metadata_json,
+            display_text=content or metadata_json,
+            metadata=metadata,
+            is_command=False,
+            immediate=False,
+        )
 
     async def process_output(self, session_id: str, output: LoopResult) -> None:
         parts = [part for part in (output.immediate_output, output.assistant_output) if part]

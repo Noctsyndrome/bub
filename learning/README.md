@@ -1,6 +1,6 @@
 # Bub 项目学习计划
 
-最后更新：2026-02-24
+最后更新：2026-03-08
 
 本目录用于保存本仓库的学习计划，以及后续产生的读码笔记、实验记录、流程图与阶段总结。
 
@@ -11,6 +11,11 @@
 - `experiments/`：CLI 实验、命令追踪、行为复现记录
 - `diagrams/`：架构图、流程图、时序图草稿
 - `checkpoints/`：阶段总结与自测结果
+
+## 近期实验记录
+
+- `learning/experiments/discord-message-mode-debug-and-fix.md`：Discord `message` 模式联通、技能回帖与环境调试
+- `learning/experiments/discord-output-alignment/README.md`：Discord 默认回复路径、`proactive_response` 语义与终端/频道输出对齐修复
 
 ## 学习目标
 
@@ -44,7 +49,7 @@
    - shell 命令：`,git status`
    - 故意失败命令：`,not-a-command`
 3. 本节产出：
-   - 用自己的话解释 README 中的“四件事”
+   - 用自己的话解释 Bub 在 `0.2.3` 中的四条核心行为原则
    - 画出一张简化运行流转图
 4. 配套解读材料：
    - `learning/notes/section-1-architecture-and-behavior.md`
@@ -90,7 +95,7 @@
    - `tests/test_tape_service.py`
    - `tests/test_tape_context.py`
 3. 练习：
-   - 使用 `,handoff`, `,anchors`, `,tape.info`, `,tape.search`, `,tape.reset`
+   - 使用 `,tape.handoff`, `,tape.anchors`, `,tape.info`, `,tape.search`, `,tape.reset`
    - 说明哪些信息被持久化、为什么这样设计
 
 ### 第5节：工具与技能扩展模型

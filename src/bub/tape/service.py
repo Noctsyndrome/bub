@@ -13,8 +13,9 @@ from typing import Any, cast
 
 from loguru import logger
 from rapidfuzz import fuzz, process
-from republic import LLM, TapeEntry
+from republic import LLM, TapeEntry, Tool, ToolAutoResult
 from republic.tape import Tape
+from republic.tape.context import build_messages
 
 from bub.tape.anchors import AnchorSummary
 from bub.tape.store import FileTapeStore
@@ -88,6 +89,50 @@ class TapeService:
 
     async def append_system(self, content: str) -> None:
         await self.tape.append_async(TapeEntry.system(content))
+
+    async def append_message(self, message: dict[str, Any]) -> None:
+        await self.tape.append_async(TapeEntry.message(message))
+
+    async def append_tool_call(self, calls: list[dict[str, Any]]) -> None:
+        await self.tape.append_async(TapeEntry.tool_call(calls))
+
+    async def append_tool_result(self, results: list[Any]) -> None:
+        await self.tape.append_async(TapeEntry.tool_result(results))
+
+    async def read_messages(self) -> list[dict[str, Any]]:
+        context = self.tape.context
+        query = context.build_query(self.tape.query_async)
+        entries = await query.all()
+        return build_messages(entries, context)
+
+    async def run_tools_async(
+        self,
+        *,
+        prompt: str | None,
+        system_prompt: str | None,
+        messages: list[dict[str, Any]] | None,
+        max_tokens: int,
+        tools: list[Tool],
+        **kwargs: Any,
+    ) -> ToolAutoResult:
+        if messages is None:
+            return await self.tape.run_tools_async(
+                prompt=prompt,
+                system_prompt=system_prompt,
+                max_tokens=max_tokens,
+                tools=tools,
+                **kwargs,
+            )
+
+        payload = [dict(message) for message in messages]
+        if system_prompt:
+            payload = [{"role": "system", "content": system_prompt}, *payload]
+        return await self._llm.run_tools_async(
+            messages=payload,
+            max_tokens=max_tokens,
+            tools=tools,
+            **kwargs,
+        )
 
     async def info(self) -> TapeInfo:
         entries = list(await self._tape.query_async.all())

@@ -1,9 +1,11 @@
 import asyncio
+from dataclasses import replace
 from typing import Any
 
 from loguru import logger
 
 from bub.channels.base import BaseChannel
+from bub.core.inbound import InboundPayload
 
 
 class SessionRunner:
@@ -42,42 +44,52 @@ class SessionRunner:
 
     async def process_message(self, channel: BaseChannel, message: Any) -> None:
         is_mentioned = channel.is_mentioned(message)
-        _, prompt = await channel.get_session_prompt(message)
+        _, inbound = await channel.get_session_prompt(message)
         now = self._loop.time()
-        if not is_mentioned and (
-            self._last_mentioned_at is None or now - self._last_mentioned_at > self.active_time_window_seconds
-        ):
+        if self._should_ignore_message(is_mentioned, now):
             self._last_mentioned_at = None
-            logger.info("session.receive ignored session_id={} message={}", self.session_id, prompt)
+            logger.info("session.receive ignored session_id={} message={}", self.session_id, inbound.display_text)
             return
-        if prompt.startswith(","):
-            logger.info("session.receive.command session_id={} message={}", self.session_id, prompt)
-            try:
-                result = await channel.run_prompt(self.session_id, prompt)
-                await channel.process_output(self.session_id, result)
-            except Exception:
-                if not channel.debounce_enabled:
-                    raise
-                logger.exception("session.run.error session_id={}", self.session_id)
+        if inbound.is_command:
+            await self._run_direct(channel, inbound, log_event="session.receive.command")
             return
-        elif not channel.debounce_enabled:
-            logger.info("session.receive.immediate session_id={} message={}", self.session_id, prompt)
-            result = await channel.run_prompt(self.session_id, prompt)
-            await channel.process_output(self.session_id, result)
+        if inbound.immediate or not channel.debounce_enabled:
+            await self._run_direct(channel, inbound, log_event="session.receive.immediate")
             return
 
-        self._prompts.append(prompt)
+        self._prompts.append(inbound.model_prompt)
         if is_mentioned:
             # Debounce mentioned messages before responding.
             self._last_mentioned_at = now
-            logger.info("session.receive.mentioned session_id={} message={}", self.session_id, prompt)
+            logger.info("session.receive.mentioned session_id={} message={}", self.session_id, inbound.display_text)
             self.reset_timer(self.debounce_seconds)
             if self._running_task is None:
                 self._running_task = asyncio.create_task(self._run(channel))
             return await self._running_task
         elif self._last_mentioned_at is not None and self._running_task is None:
             # Otherwise if bot is mentioned before, we will keep reading messages for at most 60s.
-            logger.info("session.receive followup session_id={} message={}", self.session_id, prompt)
+            logger.info("session.receive followup session_id={} message={}", self.session_id, inbound.display_text)
             self.reset_timer(self.message_delay_seconds)
             self._running_task = asyncio.create_task(self._run(channel))
             return await self._running_task
+
+    def _should_ignore_message(self, is_mentioned: bool, now: float) -> bool:
+        return not is_mentioned and (
+            self._last_mentioned_at is None or now - self._last_mentioned_at > self.active_time_window_seconds
+        )
+
+    async def _run_direct(self, channel: BaseChannel, inbound: InboundPayload, *, log_event: str) -> None:
+        logger.info("{} session_id={} message={}", log_event, self.session_id, inbound.display_text)
+        try:
+            result = await channel.run_prompt(self.session_id, self._prepare_inbound(channel, inbound))
+            await channel.process_output(self.session_id, result)
+        except Exception:
+            if not channel.debounce_enabled:
+                raise
+            logger.exception("session.run.error session_id={}", self.session_id)
+
+    @staticmethod
+    def _prepare_inbound(channel: BaseChannel, inbound: InboundPayload) -> InboundPayload:
+        if inbound.is_command:
+            return inbound
+        return replace(inbound, model_prompt=channel.format_prompt(inbound.model_prompt))

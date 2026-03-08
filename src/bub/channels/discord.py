@@ -5,7 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, cast
 
 import discord
@@ -14,8 +14,10 @@ from loguru import logger
 
 from bub.app.runtime import AppRuntime
 from bub.channels.base import BaseChannel, exclude_none
+from bub.channels.image_payloads import attachment_to_data_url
 from bub.channels.utils import resolve_proxy
 from bub.core.agent_loop import LoopResult
+from bub.core.inbound import InboundPayload, MediaAttachment
 
 
 def _message_type(message: discord.Message) -> str:
@@ -93,18 +95,27 @@ class DiscordChannel(BaseChannel[discord.Message]):
             self._bot = None
             logger.info("discord.stopped")
 
-    async def get_session_prompt(self, message: discord.Message) -> tuple[str, str]:
+    async def get_session_prompt(self, message: discord.Message) -> tuple[str, InboundPayload]:
         channel_id = str(message.channel.id)
         session_id = f"{self.name}:{channel_id}"
-        content, media = self._parse_message(message)
+        raw_text, media, extra_metadata = self._parse_message(message)
+        media = await self._prepare_media(message, media)
 
         prefix = f"{self._config.command_prefix}bub "
-        if content.startswith(prefix):
-            content = content[len(prefix) :]
+        if raw_text.startswith(prefix):
+            raw_text = raw_text[len(prefix) :]
 
-        if content.strip().startswith(","):
+        if raw_text.strip().startswith(","):
             self._latest_message_by_session[session_id] = message
-            return session_id, content
+            return session_id, InboundPayload(
+                raw_text=raw_text,
+                model_prompt=raw_text,
+                display_text=raw_text,
+                metadata={"channel_id": channel_id},
+                media=media,
+                is_command=True,
+                immediate=True,
+            )
 
         metadata: dict[str, Any] = {
             "message_id": message.id,
@@ -117,18 +128,48 @@ class DiscordChannel(BaseChannel[discord.Message]):
             "guild_id": str(message.guild.id) if message.guild else None,
         }
 
+        if extra_metadata:
+            metadata.update(extra_metadata)
         if media:
-            metadata["media"] = media
+            metadata["media"] = {
+                "attachments": [
+                    exclude_none(
+                        {
+                            "id": attachment.id,
+                            "filename": attachment.filename,
+                            "content_type": attachment.content_type,
+                            "size": attachment.size,
+                            "url": attachment.url,
+                            "width": attachment.width,
+                            "height": attachment.height,
+                        }
+                    )
+                    for attachment in media
+                ]
+            }
 
         reply_meta = self._extract_reply_metadata(message)
         if reply_meta:
             metadata["reply_to_message"] = reply_meta
 
         metadata_json = json.dumps(
-            {"message": content, "channel_id": channel_id, **exclude_none(metadata)}, ensure_ascii=False
+            {"message": raw_text, "channel_id": channel_id, **exclude_none(metadata)},
+            ensure_ascii=False,
         )
         self._latest_message_by_session[session_id] = message
-        return session_id, metadata_json
+        display_parts = [raw_text] if raw_text else []
+        for attachment in media:
+            display_parts.append(f"[Attachment: {attachment.filename}]")
+        display_text = "\n".join(part for part in display_parts if part).strip() or "[Discord attachment]"
+        return session_id, InboundPayload(
+            raw_text=raw_text,
+            model_prompt=metadata_json,
+            display_text=display_text,
+            metadata=metadata,
+            media=media,
+            is_command=False,
+            immediate=any(attachment.is_image for attachment in media),
+        )
 
     async def process_output(self, session_id: str, output: LoopResult) -> None:
         parts = [part for part in (output.immediate_output, output.assistant_output) if part]
@@ -138,7 +179,13 @@ class DiscordChannel(BaseChannel[discord.Message]):
         if content:
             print(content, flush=True)
 
-        send_content = output.immediate_output.strip()
+        if self.runtime.settings.proactive_response:
+            send_parts = [part for part in (output.immediate_output,) if part]
+            if output.error:
+                send_parts.append(f"Error: {output.error}")
+            send_content = "\n\n".join(send_parts).strip()
+        else:
+            send_content = content
         if not send_content:
             return
 
@@ -163,7 +210,7 @@ class DiscordChannel(BaseChannel[discord.Message]):
             logger.warning("discord.inbound no handler for received messages")
             return
 
-        content, _ = self._parse_message(message)
+        content, media, _ = self._parse_message(message)
         logger.info(
             "discord.inbound channel_id={} sender_id={} username={} content={}",
             message.channel.id,
@@ -171,6 +218,15 @@ class DiscordChannel(BaseChannel[discord.Message]):
             message.author.name,
             content[:100],
         )
+        if media:
+            logger.info(
+                "discord.inbound.media channel_id={} images={} multimodal={} inline_images={} compressed_images={}",
+                message.channel.id,
+                sum(1 for attachment in media if attachment.is_image),
+                any(attachment.is_image for attachment in media),
+                sum(1 for attachment in media if attachment.model_url is not None),
+                sum(1 for attachment in media if attachment.compressed),
+            )
 
         async with message.channel.typing():
             await self._on_receive(message)
@@ -193,7 +249,10 @@ class DiscordChannel(BaseChannel[discord.Message]):
         if self._config.allow_channels and channel_id not in self._config.allow_channels:
             return False
 
-        if not message.content.strip():
+        has_visible_content = bool(
+            message.content.strip() or getattr(message, "attachments", None) or getattr(message, "stickers", None)
+        )
+        if not has_visible_content:
             return False
 
         sender_tokens = {str(message.author.id), message.author.name}
@@ -227,6 +286,67 @@ class DiscordChannel(BaseChannel[discord.Message]):
         resolved = ref.resolved
         return bool(isinstance(resolved, discord.Message) and resolved.author and resolved.author.id == bot_user.id)
 
+    async def _prepare_media(
+        self,
+        message: discord.Message,
+        media: tuple[MediaAttachment, ...],
+    ) -> tuple[MediaAttachment, ...]:
+        if not media:
+            return media
+
+        source_by_id = {str(attachment.id): attachment for attachment in message.attachments}
+        prepared: list[MediaAttachment] = []
+        for attachment in media:
+            if not attachment.is_image:
+                prepared.append(attachment)
+                continue
+
+            source = source_by_id.get(attachment.id)
+            if source is None or not hasattr(source, "read"):
+                prepared.append(attachment)
+                continue
+
+            logger.info(
+                "discord.image.inline_start attachment_id={} filename={} size={} url={}",
+                attachment.id,
+                attachment.filename,
+                attachment.size,
+                attachment.url,
+            )
+            try:
+                prepared_image = await attachment_to_data_url(
+                    source,
+                    fallback_content_type=attachment.content_type,
+                    fallback_filename=attachment.filename,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "discord.image.inline_failed attachment_id={} filename={} error={}",
+                    attachment.id,
+                    attachment.filename,
+                    exc,
+                )
+                prepared.append(attachment)
+                continue
+
+            logger.info(
+                "discord.image.inline_ready attachment_id={} filename={} source_bytes={} output_bytes={} compressed={}",
+                attachment.id,
+                attachment.filename,
+                prepared_image.source_bytes,
+                prepared_image.output_bytes,
+                prepared_image.compressed,
+            )
+            prepared.append(
+                replace(
+                    attachment,
+                    model_url=prepared_image.data_url,
+                    model_bytes=prepared_image.output_bytes,
+                    compressed=prepared_image.compressed,
+                )
+            )
+        return tuple(prepared)
+
     @staticmethod
     def _is_bub_scoped_thread(message: discord.Message) -> bool:
         channel = message.channel
@@ -237,32 +357,36 @@ class DiscordChannel(BaseChannel[discord.Message]):
         return is_thread and thread_name.lower().startswith("bub")
 
     @staticmethod
-    def _parse_message(message: discord.Message) -> tuple[str, dict[str, Any] | None]:
-        if message.content:
-            return message.content, None
+    def _parse_message(
+        message: discord.Message,
+    ) -> tuple[str, tuple[MediaAttachment, ...], dict[str, Any] | None]:
+        raw_text = message.content or ""
+        attachments = tuple(
+            MediaAttachment(
+                kind="attachment",
+                id=str(att.id),
+                filename=att.filename,
+                content_type=att.content_type,
+                size=att.size,
+                url=att.url,
+                width=getattr(att, "width", None),
+                height=getattr(att, "height", None),
+            )
+            for att in message.attachments
+        )
 
-        if message.attachments:
-            attachment_lines: list[str] = []
-            attachment_meta: list[dict[str, Any]] = []
-            for att in message.attachments:
-                attachment_lines.append(f"[Attachment: {att.filename}]")
-                attachment_meta.append(
-                    exclude_none({
-                        "id": str(att.id),
-                        "filename": att.filename,
-                        "content_type": att.content_type,
-                        "size": att.size,
-                        "url": att.url,
-                    })
-                )
-            return "\n".join(attachment_lines), {"attachments": attachment_meta}
+        metadata: dict[str, Any] = {}
+        if message.stickers:
+            metadata["stickers"] = [{"id": str(sticker.id), "name": sticker.name} for sticker in message.stickers]
+
+        if raw_text or attachments:
+            return raw_text, attachments, metadata or None
 
         if message.stickers:
             lines = [f"[Sticker: {sticker.name}]" for sticker in message.stickers]
-            meta = [{"id": str(sticker.id), "name": sticker.name} for sticker in message.stickers]
-            return "\n".join(lines), {"stickers": meta}
+            return "\n".join(lines), (), metadata
 
-        return "[Unknown message type]", None
+        return "[Unknown message type]", (), None
 
     @staticmethod
     def _extract_reply_metadata(message: discord.Message) -> dict[str, Any] | None:

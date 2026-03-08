@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from bub.app.runtime import AppRuntime
+from bub.core.inbound import InboundPayload
 
 if TYPE_CHECKING:
     from bub.core import LoopResult
@@ -43,11 +44,11 @@ class BaseChannel[T](ABC):
         """Determine if the message is relevant to this channel."""
 
     @abstractmethod
-    async def get_session_prompt(self, message: T) -> tuple[str, str]:
-        """Get the session id and prompt text for the given message."""
+    async def get_session_prompt(self, message: T) -> tuple[str, InboundPayload]:
+        """Get the session id and structured inbound payload for the given message."""
         pass
 
-    async def run_prompt(self, session_id: str, prompt: str) -> LoopResult:
+    async def run_prompt(self, session_id: str, prompt: str | InboundPayload) -> LoopResult:
         """Run the given prompt through the runtime and return the result."""
         return await self.runtime.handle_input(session_id, prompt)
 

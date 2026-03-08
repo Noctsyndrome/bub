@@ -7,7 +7,7 @@ import re
 import textwrap
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from loguru import logger
 from republic import Tool, ToolAutoResult
@@ -37,6 +37,7 @@ class ModelTurnResult:
 @dataclass
 class _PromptState:
     prompt: str
+    multimodal_messages: list[dict[str, Any]] | None = None
     step: int = 0
     followups: int = 0
     visible_parts: list[str] = field(default_factory=list)
@@ -63,6 +64,7 @@ class ModelRunner:
         model_timeout_seconds: int | None,
         base_system_prompt: str,
         get_workspace_system_prompt: Callable[[], str],
+        proactive_response: bool = False,
     ) -> None:
         self._tape = tape
         self._router = router
@@ -75,15 +77,18 @@ class ModelRunner:
         self._model_timeout_seconds = model_timeout_seconds
         self._base_system_prompt = base_system_prompt.strip()
         self._get_workspace_system_prompt = get_workspace_system_prompt
+        self._proactive_response = proactive_response
         self._expanded_skills: set[str] = set()
 
     def reset_context(self) -> None:
         """Clear volatile model-side context caches within one session."""
         self._expanded_skills.clear()
 
-    async def run(self, prompt: str) -> ModelTurnResult:
-        state = _PromptState(prompt=prompt)
+    async def run(self, prompt: str, *, messages: list[dict[str, Any]] | None = None) -> ModelTurnResult:
+        state = _PromptState(prompt=prompt, multimodal_messages=messages)
         self._activate_hints(prompt)
+        if messages is not None:
+            self._activate_hints(_extract_message_text(messages))
 
         while state.step < self._max_steps and not state.exit_requested:
             state.step += 1
@@ -95,7 +100,10 @@ class ModelRunner:
                     "model": self._model,
                 },
             )
-            response = await self._chat(state.prompt)
+            request_messages: list[dict[str, Any]] | None = None
+            if state.multimodal_messages is not None:
+                request_messages = [*(await self._tape.read_messages()), *state.multimodal_messages]
+            response = await self._chat(state.prompt, messages=request_messages)
             if response.error is not None:
                 state.error = response.error
                 await self._tape.append_event(
@@ -106,6 +114,10 @@ class ModelRunner:
                     },
                 )
                 break
+
+            if state.multimodal_messages is not None:
+                await self._record_multimodal_turn(state.multimodal_messages, response)
+                state.multimodal_messages = None
 
             if response.followup_prompt:
                 await self._tape.append_event(
@@ -161,23 +173,33 @@ class ModelRunner:
             },
         )
 
-    async def _chat(self, prompt: str) -> _ChatResult:
+    async def _chat(self, prompt: str, *, messages: list[dict[str, Any]] | None = None) -> _ChatResult:
         system_prompt = self._render_system_prompt()
+        provider, _, _ = self._model.partition(":")
+        if messages is not None and provider.casefold() != "openai":
+            return _ChatResult(
+                text="",
+                error=(
+                    "image_input_unsupported: current model configuration does not support Discord image understanding "
+                    "for this provider. Switch to an openai:* multimodal model."
+                ),
+            )
         try:
             async with asyncio.timeout(self._model_timeout_seconds):
-                provider, _, _ = self._model.partition(":")
                 if provider.casefold() == "vertexai":
-                    output = await self._tape.tape.run_tools_async(
-                        prompt=prompt,
+                    output = await self._tape.run_tools_async(
+                        prompt=prompt if messages is None else None,
                         system_prompt=system_prompt,
+                        messages=messages,
                         max_tokens=self._max_tokens,
                         tools=self._tools,
                         http_options={"headers": self.DEFAULT_HEADERS},
                     )
                 else:
-                    output = await self._tape.tape.run_tools_async(
-                        prompt=prompt,
+                    output = await self._tape.run_tools_async(
+                        prompt=prompt if messages is None else None,
                         system_prompt=system_prompt,
+                        messages=messages,
                         max_tokens=self._max_tokens,
                         tools=self._tools,
                         extra_headers=self.DEFAULT_HEADERS,
@@ -190,6 +212,14 @@ class ModelRunner:
             )
         except Exception as exc:
             logger.exception("model.call.error")
+            if messages is not None and _looks_like_multimodal_unsupported(str(exc)):
+                return _ChatResult(
+                    text="",
+                    error=(
+                        "image_input_unsupported: current model configuration rejected Discord image input. "
+                        "Switch to a multimodal openai-compatible model or continue with text-only messages."
+                    ),
+                )
             return _ChatResult(text="", error=f"model_call_error: {exc!s}")
 
     def _render_system_prompt(self) -> str:
@@ -202,7 +232,7 @@ class ModelRunner:
         compact_skills = render_compact_skills(self._list_skills(), self._expanded_skills)
         if compact_skills:
             blocks.append(compact_skills)
-        blocks.append(_runtime_contract())
+        blocks.append(_runtime_contract(self._proactive_response))
         return "\n\n".join(block for block in blocks if block.strip())
 
     def _activate_hints(self, text: str) -> None:
@@ -219,30 +249,122 @@ class ModelRunner:
     def _build_skill_index(self) -> dict[str, SkillMetadata]:
         return {skill.name.casefold(): skill for skill in self._list_skills()}
 
+    async def _record_multimodal_turn(self, messages: list[dict[str, Any]], response: _ChatResult) -> None:
+        for message in messages:
+            await self._tape.append_message(message)
+        await self._tape.append_event(
+            "model.input.multimodal",
+            {
+                "provider": self._model.partition(":")[0],
+                "images": _count_message_images(messages),
+            },
+        )
+        if response.tool_calls:
+            await self._tape.append_tool_call(response.tool_calls)
+        if response.tool_results:
+            await self._tape.append_tool_result(response.tool_results)
+        if response.text:
+            await self._tape.append_message({"role": "assistant", "content": response.text})
+
 
 @dataclass(frozen=True)
 class _ChatResult:
     text: str
     error: str | None = None
     followup_prompt: str | None = None
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    tool_results: list[Any] = field(default_factory=list)
 
     @classmethod
     def from_tool_auto(cls, output: ToolAutoResult) -> _ChatResult:
         if output.kind == "text":
             return cls(text=output.text or "")
         if output.kind == "tools":
-            return cls(text="", followup_prompt=TOOL_CONTINUE_PROMPT)
+            return cls(
+                text="",
+                followup_prompt=TOOL_CONTINUE_PROMPT,
+                tool_calls=list(output.tool_calls),
+                tool_results=list(output.tool_results),
+            )
 
         if output.tool_calls or output.tool_results:
-            return cls(text="", followup_prompt=TOOL_CONTINUE_PROMPT)
+            return cls(
+                text="",
+                followup_prompt=TOOL_CONTINUE_PROMPT,
+                tool_calls=list(output.tool_calls),
+                tool_results=list(output.tool_results),
+            )
 
         if output.error is None:
             return cls(text="", error="tool_auto_error: unknown")
         return cls(text="", error=f"{output.error.kind.value}: {output.error.message}")
 
 
-def _runtime_contract() -> str:
-    return textwrap.dedent("""\
+def _extract_message_text(messages: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, str):
+            parts.append(content)
+            continue
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text = block.get("text")
+                    if isinstance(text, str):
+                        parts.append(text)
+    return "\n".join(parts)
+
+
+def _count_message_images(messages: list[dict[str, Any]]) -> int:
+    count = 0
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "image_url":
+                count += 1
+    return count
+
+
+def _looks_like_multimodal_unsupported(text: str) -> bool:
+    normalized = text.casefold()
+    patterns = (
+        "image_url",
+        "image input",
+        "vision",
+        "multimodal",
+        "unsupported",
+        "invalid image",
+        "invalid type",
+    )
+    return any(pattern in normalized for pattern in patterns)
+
+
+def _runtime_contract(proactive_response: bool) -> str:
+    if not proactive_response:
+        response_instruct = """\
+        <response_instruct>
+        If this turn comes from a channel message, return the exact final reply text as plain natural language.
+        Use normal line breaks in the returned text; do not emit escaped '\\n' sequences unless the user literally asks for them.
+        Do not call the channel skill just to send a normal reply, because the channel adapter will deliver your final text.
+        Only use a channel skill when the user explicitly asks for a channel-side action beyond replying.
+        </response_instruct>"""
+    else:
+        response_instruct = """\
+        <response_instruct>
+        You MUST send message to the corresponding channel before finish when you want to respond.
+        Route your response to the same channel the message came from.
+        There is a skill named `{channel}` for each channel that you need to figure out how to send a response to that channel.
+        ## Before finishing ANY response to a channel message:
+        1. Identify the source channel from the user message metadata
+        2. Prepare your response text
+        3. Call the corresponding channel skill to deliver the message
+        4. ONLY THEN end your turn
+        </response_instruct>"""
+
+    return textwrap.dedent(f"""\
         <runtime_contract>
         1. Use tool calls for all actions (file ops, shell, web, tape, skills).
         2. Do not emit comma-prefixed commands in normal flow; use tool calls instead.
@@ -254,13 +376,4 @@ def _runtime_contract() -> str:
         <context_contract>
         Excessively long context may cause model call failures. In this case, you SHOULD first use tape.handoff tool to shorten the length of the retrieved history.
         </context_contract>
-        <response_instruct>
-        You MUST send message to the corresponding channel before finish when you want to respond.
-        Route your response to the same channel the message came from.
-        There is a skill named `{channel}` for each channel that you need to figure out how to send a response to that channel.
-        ## Before finishing ANY response to a channel message:
-        1. Identify the source channel from the user message metadata
-        2. Prepare your response text
-        3. Call the corresponding channel skill to deliver the message
-        4. ONLY THEN end your turn
-        </response_instruct>""")
+        {response_instruct}""")

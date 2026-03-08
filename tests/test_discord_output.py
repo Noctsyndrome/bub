@@ -24,13 +24,16 @@ def _build_channel() -> DiscordChannel:
         discord_allow_channels=[],
         discord_command_prefix="!",
         discord_proxy=None,
+        proactive_response=False,
     )
     runtime = SimpleNamespace(settings=settings)
     return DiscordChannel(runtime)  # type: ignore[arg-type]
 
 
 @pytest.mark.asyncio
-async def test_process_output_sends_only_immediate_and_prints_full(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_process_output_sends_full_content_and_prints_full_when_not_proactive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     channel = _build_channel()
     sink = DummyMessageable()
     printed: list[str] = []
@@ -58,11 +61,13 @@ async def test_process_output_sends_only_immediate_and_prints_full(monkeypatch: 
     assert "immediate reply" in joined
     assert "assistant details" in joined
     assert "Error: boom" in joined
-    assert sink.sent == [{"content": "immediate reply"}]
+    assert sink.sent == [{"content": "immediate reply\n\nassistant details\n\nError: boom"}]
 
 
 @pytest.mark.asyncio
-async def test_process_output_no_immediate_does_not_send_but_prints(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_process_output_no_immediate_still_sends_assistant_text_when_not_proactive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     channel = _build_channel()
     sink = DummyMessageable()
     printed: list[str] = []
@@ -88,4 +93,36 @@ async def test_process_output_no_immediate_does_not_send_but_prints(monkeypatch:
 
     joined = "\n".join(printed)
     assert "assistant only" in joined
-    assert sink.sent == []
+    assert sink.sent == [{"content": "assistant only"}]
+
+
+@pytest.mark.asyncio
+async def test_process_output_sends_only_immediate_when_proactive(monkeypatch: pytest.MonkeyPatch) -> None:
+    channel = _build_channel()
+    channel.runtime.settings.proactive_response = True
+    sink = DummyMessageable()
+    printed: list[str] = []
+
+    def _capture_print(*args: object, **kwargs: object) -> None:
+        printed.append(" ".join(str(arg) for arg in args))
+
+    async def _resolve_channel(_session_id: str) -> DummyMessageable:
+        return sink
+
+    monkeypatch.setattr(builtins, "print", _capture_print)
+    channel._bot = object()  # type: ignore[assignment]
+    channel._resolve_channel = _resolve_channel  # type: ignore[method-assign]
+
+    output = LoopResult(
+        immediate_output="immediate reply",
+        assistant_output="assistant details",
+        exit_requested=False,
+        steps=1,
+        error=None,
+    )
+    await channel.process_output("discord:1", output)
+
+    joined = "\n".join(printed)
+    assert "immediate reply" in joined
+    assert "assistant details" in joined
+    assert sink.sent == [{"content": "immediate reply"}]

@@ -12,6 +12,7 @@ from typing import Any
 from republic import ToolContext
 
 from bub.core.commands import ParsedArgs, parse_command_words, parse_internal_command, parse_kv_arguments
+from bub.core.inbound import InboundPayload
 from bub.core.types import DetectedCommand
 from bub.tape.service import TapeService
 from bub.tools.progressive import ProgressiveToolView
@@ -42,6 +43,7 @@ class UserRouteResult:
 
     enter_model: bool
     model_prompt: str
+    model_messages: list[dict[str, Any]] | None
     immediate_output: str
     exit_requested: bool
 
@@ -70,13 +72,39 @@ class InputRouter:
         self._tape = tape
         self._workspace = workspace
 
-    async def route_user(self, raw: str) -> UserRouteResult:
-        stripped = raw.strip()
+    async def route_user(self, raw: str | InboundPayload) -> UserRouteResult:
+        inbound = raw if isinstance(raw, InboundPayload) else None
+        raw_text = inbound.raw_text if inbound is not None else raw
+        stripped = raw_text.strip()
         if not stripped:
-            return UserRouteResult(enter_model=False, model_prompt="", immediate_output="", exit_requested=False)
+            if inbound is not None and inbound.has_image_attachments:
+                return UserRouteResult(
+                    enter_model=True,
+                    model_prompt=inbound.model_prompt,
+                    model_messages=[{"role": "user", "content": _build_multimodal_user_content(inbound)}],
+                    immediate_output="",
+                    exit_requested=False,
+                )
+            return UserRouteResult(
+                enter_model=False,
+                model_prompt="",
+                model_messages=None,
+                immediate_output="",
+                exit_requested=False,
+            )
         command = self._parse_comma_prefixed_command(stripped)
         if command is None:
-            return UserRouteResult(enter_model=True, model_prompt=stripped, immediate_output="", exit_requested=False)
+            model_prompt = inbound.model_prompt if inbound is not None else stripped
+            model_messages = None
+            if inbound is not None and inbound.has_image_attachments:
+                model_messages = [{"role": "user", "content": _build_multimodal_user_content(inbound)}]
+            return UserRouteResult(
+                enter_model=True,
+                model_prompt=model_prompt,
+                model_messages=model_messages,
+                immediate_output="",
+                exit_requested=False,
+            )
 
         result = await self._execute_command(command, origin="human")
         if result.status == "ok" and result.name != "bash":
@@ -84,12 +112,14 @@ class InputRouter:
                 return UserRouteResult(
                     enter_model=False,
                     model_prompt="",
+                    model_messages=None,
                     immediate_output="",
                     exit_requested=True,
                 )
             return UserRouteResult(
                 enter_model=False,
                 model_prompt="",
+                model_messages=None,
                 immediate_output=result.output,
                 exit_requested=False,
             )
@@ -98,6 +128,7 @@ class InputRouter:
             return UserRouteResult(
                 enter_model=False,
                 model_prompt="",
+                model_messages=None,
                 immediate_output=result.output,
                 exit_requested=False,
             )
@@ -106,6 +137,7 @@ class InputRouter:
         return UserRouteResult(
             enter_model=True,
             model_prompt=result.block(),
+            model_messages=None,
             immediate_output=result.output,
             exit_requested=False,
         )
@@ -368,3 +400,11 @@ class InputRouter:
     @staticmethod
     def to_json(data: Any) -> str:
         return json.dumps(data, ensure_ascii=False)
+
+
+def _build_multimodal_user_content(inbound: InboundPayload) -> list[dict[str, Any]]:
+    text = inbound.model_prompt.strip() or "User sent one or more Discord image attachments. Analyze the image content directly."
+    blocks: list[dict[str, Any]] = [{"type": "text", "text": text}]
+    for attachment in inbound.image_attachments:
+        blocks.append({"type": "image_url", "image_url": {"url": attachment.model_url or attachment.url}})
+    return blocks

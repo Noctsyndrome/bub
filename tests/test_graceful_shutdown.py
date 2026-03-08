@@ -6,6 +6,7 @@ import pytest
 from bub.channels.base import BaseChannel
 from bub.channels.manager import ChannelManager
 from bub.cli.app import _serve_channels
+from bub.core.inbound import InboundPayload
 
 
 class _Settings:
@@ -30,9 +31,15 @@ class _ChannelRaisesOnStop(BaseChannel[object]):
         finally:
             raise RuntimeError("stop failure")
 
-    async def get_session_prompt(self, message: object) -> tuple[str, str]:
+    async def get_session_prompt(self, message: object) -> tuple[str, InboundPayload]:
         _ = message
-        return "s", "p"
+        return "s", InboundPayload(
+            raw_text="p",
+            model_prompt="p",
+            display_text="p",
+            metadata={},
+            immediate=True,
+        )
 
     def is_mentioned(self, message: object) -> bool:
         _ = message

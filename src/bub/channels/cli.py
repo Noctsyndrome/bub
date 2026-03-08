@@ -20,6 +20,7 @@ from bub.app.runtime import AppRuntime
 from bub.channels.base import BaseChannel
 from bub.cli.render import CliRenderer
 from bub.core.agent_loop import LoopResult
+from bub.core.inbound import InboundPayload
 
 
 class CliChannel(BaseChannel[str]):
@@ -68,8 +69,15 @@ class CliChannel(BaseChannel[str]):
         _ = message
         return True
 
-    async def get_session_prompt(self, message: str) -> tuple[str, str]:
-        return self._session_id, message
+    async def get_session_prompt(self, message: str) -> tuple[str, InboundPayload]:
+        return self._session_id, InboundPayload(
+            raw_text=message,
+            model_prompt=message,
+            display_text=message,
+            metadata={"session_id": self._session_id},
+            is_command=message.strip().startswith(","),
+            immediate=True,
+        )
 
     def format_prompt(self, prompt: str) -> str:
         return prompt

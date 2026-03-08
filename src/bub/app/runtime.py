@@ -22,6 +22,7 @@ from loguru import logger
 from bub.app.jobstore import JSONJobStore
 from bub.config.settings import Settings
 from bub.core import AgentLoop, InputRouter, LoopResult, ModelRunner
+from bub.core.inbound import InboundPayload
 from bub.integrations.republic_client import build_llm, build_tape_store, read_workspace_agents_prompt
 from bub.skills.loader import SkillMetadata, discover_skills
 from bub.tape import TapeService, default_tape_context
@@ -46,7 +47,7 @@ class SessionRuntime:
     model_runner: ModelRunner
     tool_view: ProgressiveToolView
 
-    async def handle_input(self, text: str) -> LoopResult:
+    async def handle_input(self, text: str | InboundPayload) -> LoopResult:
         await self.tape.ensure_bootstrap_anchor()
         with self.tape.fork_tape() as tape:
             tape.context = default_tape_context({"session_id": self.session_id})
@@ -125,13 +126,14 @@ class AppRuntime:
             model_timeout_seconds=self.settings.model_timeout_seconds,
             base_system_prompt=self.settings.system_prompt,
             get_workspace_system_prompt=lambda: read_workspace_agents_prompt(self.workspace),
+            proactive_response=self.settings.proactive_response,
         )
         loop = AgentLoop(router=router, model_runner=runner, tape=tape)
         runtime = SessionRuntime(session_id=session_id, loop=loop, tape=tape, model_runner=runner, tool_view=tool_view)
         self._sessions[session_id] = runtime
         return runtime
 
-    async def handle_input(self, session_id: str, text: str) -> LoopResult:
+    async def handle_input(self, session_id: str, text: str | InboundPayload) -> LoopResult:
         session = self.get_session(session_id)
         task = asyncio.create_task(session.handle_input(text))
         self._active_inputs.add(task)

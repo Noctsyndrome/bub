@@ -1,6 +1,6 @@
 # 第1节教材：架构总览与外部行为
 
-最后更新：2026-02-24
+最后更新：2026-03-08
 
 本材料是“第1节：架构总览与外部行为”的一体化学习教材。它不是导读，而是把本节需要掌握的核心内容直接整合进来：
 
@@ -15,7 +15,7 @@
 ## 1. 本节学习目标（完成后应达到）
 
 1. 能解释 Bub 的项目定位与设计目标。
-2. 能准确说出“四件事（Four Things To Know）”并说明每条的工程意义。
+2. 能准确说出 Bub 在 `0.2.3` 中的四条核心行为原则，并说明每条的工程意义。
 3. 能区分普通文本、内部命令、shell 命令三类输入路径。
 4. 能解释“命令失败回退模型”的设计意图和实现痕迹。
 5. 能画出单轮输入处理的最小流程图（不要求细节实现）。
@@ -27,42 +27,43 @@
 来源：`README.md:10`、`README.md:11`
 
 ```text
-Bub is a coding agent CLI built on `republic`.
-It is designed for real engineering workflows where execution must be predictable, inspectable, and recoverable.
+Bub is a collaborative agent for shared delivery workflows, evolving into a framework that helps other agents operate with the same collaboration model.
+It is not a personal-assistant shell: it is designed for shared environments where work must be inspectable, handoff-friendly, and operationally reliable.
 ```
 
 ### 解读
 
 这里有两个关键词需要先固定下来：
 
-- `coding agent CLI`：不是单纯聊天工具，而是面向工程执行的命令行代理。
-- `predictable / inspectable / recoverable`：可预测、可检查、可恢复。这三个词基本定义了你后面看到的所有设计（严格命令边界、显式路由、append-only tape）。
+- `collaborative agent for shared delivery workflows`：不是个人助理式 shell，而是面向共享交付环境的协作型 agent。
+- `inspectable / handoff-friendly / operationally reliable`：可检查、利于交接、运行可靠。这几个词基本定义了你后面看到的所有设计（严格命令边界、显式路由、append-only tape）。
 
 本节你要建立的不是“它能做什么”的功能清单，而是“它为什么要这样设计”的行为模型。
 
-## 3. README 的“四件事”：本节主线（原文 + 对照解读）
+## 3. Bub 的四条核心行为原则：本节主线（原文 + 对照解读）
 
 ### 原文摘录（README）
 
-来源：`README.md:13`-`README.md:18`
+来源：`README.md:18`-`README.md:24`
 
 ```text
-## Four Things To Know
+## What Bub Provides
 
-1. Command boundary is strict: only lines starting with `,` are treated as commands.
-2. The same routing model is applied to both user input and assistant output.
-3. Successful commands return directly; failed commands fall back to the model with structured context.
-4. Session context is append-only tape with explicit `anchor/handoff` transitions.
+- Multi-operator collaboration in shared delivery environments.
+- Explicit command boundaries for predictable execution.
+- Verifiable history (`tape`, `anchor`, `handoff`) for audit and continuity.
+- Channel-neutral behavior across CLI and message channels.
+- Extensible tools and skills with a unified operator-facing workflow.
 ```
 
-### 解读总览（你先记住这四条）
+### 解读总览（本节先抓住四条行为主线）
 
-1. 命令边界严格：只有 `,` 开头才是命令，减少误执行。
-2. 用户和模型共享路由语义：系统行为一致，可预测。
-3. 成功命令直接返回；失败命令转给模型推理：失败不是终点，而是进入“诊断/修复建议”阶段。
-4. 会话上下文是追加式 tape，并用 `anchor/handoff` 管理阶段切换：状态变化显式化，便于恢复与审计。
+1. 共享交付协作：Bub 面向多人/多阶段协作，而不是个人 shell 助手。
+2. 命令边界严格：只有 `,` 开头才是命令，减少误执行。
+3. 会话历史可验证：用 tape / anchor / handoff 保证可审计与可恢复。
+4. CLI 与消息渠道共享一套行为边界：渠道不同，核心语义一致。
 
-下面每一条都会用文档与源码双重证据来说明。
+下面的展开会继续把这些原则落到你真正要掌握的运行语义上，尤其是严格命令边界、共享路由语义、失败命令回退模型和 append-only tape。
 
 ## 4. 第一条：严格命令边界（原文、代码、行为）
 
@@ -486,7 +487,7 @@ hello
 1. 环境说明（是否配置模型 API）
 2. 4 个实验输入与关键输出
 3. 每个实验的路径判断（命令路径 / 模型路径 / 失败回退路径）
-4. 你对“四件事”的复述版本（中文）
+4. 你对“四条核心行为原则”的复述版本（中文）
 5. 一张简化流程图（文字版也可以）
 
 ## 14. 本节自测题（能答出来就算过关）

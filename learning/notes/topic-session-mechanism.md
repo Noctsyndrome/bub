@@ -1,6 +1,6 @@
 # 专题：Bub Session 机制详解
 
-最后更新：2026-02-24
+最后更新：2026-03-08
 
 本文档深入解析 Bub 的 Session 机制，涵盖所有执行模式下的会话隔离、持久化和恢复原理。
 
@@ -634,7 +634,7 @@ uv run bub chat --session-id project-a
 
 ```bash
 # 查看当前 session 的所有 anchors
-,anchors
+,tape.anchors
 ```
 
 ---

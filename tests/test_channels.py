@@ -6,6 +6,7 @@ import pytest
 
 from bub.channels.base import BaseChannel
 from bub.channels.manager import ChannelManager
+from bub.core.inbound import InboundPayload
 
 
 class _Settings:
@@ -36,9 +37,15 @@ class _FakeChannel(BaseChannel[object]):
         finally:
             self.stopped = True
 
-    async def get_session_prompt(self, message: object) -> tuple[str, str]:
+    async def get_session_prompt(self, message: object) -> tuple[str, InboundPayload]:
         _ = message
-        return "session", "prompt"
+        return "session", InboundPayload(
+            raw_text="prompt",
+            model_prompt="prompt",
+            display_text="prompt",
+            metadata={},
+            immediate=True,
+        )
 
     def is_mentioned(self, message: object) -> bool:
         _ = message

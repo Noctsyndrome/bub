@@ -100,13 +100,17 @@ class FakeTapeImpl:
     async def run_tools_async(
         self,
         *,
-        prompt: str,
+        prompt: str | None,
         system_prompt: str,
         max_tokens: int,
         tools: list[object],
+        messages: list[dict[str, object]] | None = None,
         **kwargs: object,
     ) -> ToolAutoResult:
         self.calls.append((prompt, system_prompt, max_tokens))
+        if messages is not None:
+            kwargs = dict(kwargs)
+            kwargs["messages"] = messages
         self.call_kwargs.append(kwargs)
         return self.outputs.pop(0)
 
@@ -115,9 +119,46 @@ class FakeTapeImpl:
 class FakeTapeService:
     tape: FakeTapeImpl
     events: list[tuple[str, dict[str, object]]] = field(default_factory=list)
+    messages: list[dict[str, object]] = field(default_factory=list)
+    tool_calls: list[list[dict[str, object]]] = field(default_factory=list)
+    tool_results: list[list[object]] = field(default_factory=list)
 
     async def append_event(self, name: str, data: dict[str, object]) -> None:
         self.events.append((name, data))
+
+    async def append_message(self, message: dict[str, object]) -> None:
+        self.messages.append(message)
+
+    async def append_tool_call(self, calls: list[dict[str, object]]) -> None:
+        self.tool_calls.append(calls)
+
+    async def append_tool_result(self, results: list[object]) -> None:
+        self.tool_results.append(results)
+
+    async def read_messages(self) -> list[dict[str, object]]:
+        return list(self.messages)
+
+    async def run_tools_async(
+        self,
+        *,
+        prompt: str | None,
+        system_prompt: str | None,
+        messages: list[dict[str, object]] | None,
+        max_tokens: int,
+        tools: list[object],
+        **kwargs: object,
+    ) -> ToolAutoResult:
+        payload = messages
+        if payload is not None and system_prompt:
+            payload = [{"role": "system", "content": system_prompt}, *payload]
+        return await self.tape.run_tools_async(
+            prompt=prompt,
+            system_prompt=system_prompt if messages is None else None,
+            messages=payload,
+            max_tokens=max_tokens,
+            tools=tools,
+            **kwargs,
+        )
 
 
 @pytest.mark.asyncio
@@ -452,3 +493,115 @@ async def test_model_runner_uses_extra_headers_for_unknown_provider() -> None:
     kwargs = tape.tape.call_kwargs[0]
     assert kwargs.get("extra_headers") == ModelRunner.DEFAULT_HEADERS
     assert "http_options" not in kwargs
+
+
+@pytest.mark.asyncio
+async def test_model_runner_automatic_channel_delivery_contract_avoids_channel_skill() -> None:
+    tape = FakeTapeService(FakeTapeImpl(outputs=[ToolAutoResult.text_result("assistant-only")]))
+    runner = ModelRunner(
+        tape=tape,  # type: ignore[arg-type]
+        router=SingleStepRouter(),  # type: ignore[arg-type]
+        tool_view=FakeToolView(),  # type: ignore[arg-type]
+        tools=[],
+        list_skills=lambda: [],
+        model="openrouter:test",
+        max_steps=1,
+        max_tokens=512,
+        model_timeout_seconds=90,
+        base_system_prompt="base",
+        get_workspace_system_prompt=lambda: "",
+        proactive_response=False,
+    )
+
+    await runner.run("channel: $discord\nhello")
+    _, system_prompt, _ = tape.tape.calls[0]
+    assert "Do not call the channel skill just to send a normal reply" in system_prompt
+    assert "You MUST send message to the corresponding channel before finish" not in system_prompt
+
+
+@pytest.mark.asyncio
+async def test_model_runner_proactive_channel_delivery_contract_requires_channel_skill() -> None:
+    tape = FakeTapeService(FakeTapeImpl(outputs=[ToolAutoResult.text_result("assistant-only")]))
+    runner = ModelRunner(
+        tape=tape,  # type: ignore[arg-type]
+        router=SingleStepRouter(),  # type: ignore[arg-type]
+        tool_view=FakeToolView(),  # type: ignore[arg-type]
+        tools=[],
+        list_skills=lambda: [],
+        model="openrouter:test",
+        max_steps=1,
+        max_tokens=512,
+        model_timeout_seconds=90,
+        base_system_prompt="base",
+        get_workspace_system_prompt=lambda: "",
+        proactive_response=True,
+    )
+
+    await runner.run("channel: $discord\nhello")
+    _, system_prompt, _ = tape.tape.calls[0]
+    assert "You MUST send message to the corresponding channel before finish" in system_prompt
+
+
+@pytest.mark.asyncio
+async def test_model_runner_uses_multimodal_messages_for_openai_provider() -> None:
+    tape = FakeTapeService(FakeTapeImpl(outputs=[ToolAutoResult.text_result("assistant-only")]))
+    runner = ModelRunner(
+        tape=tape,  # type: ignore[arg-type]
+        router=SingleStepRouter(),  # type: ignore[arg-type]
+        tool_view=FakeToolView(),  # type: ignore[arg-type]
+        tools=[],
+        list_skills=lambda: [],
+        model="openai:test",
+        max_steps=1,
+        max_tokens=512,
+        model_timeout_seconds=90,
+        base_system_prompt="base",
+        get_workspace_system_prompt=lambda: "",
+    )
+
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "describe image"},
+                {"type": "image_url", "image_url": {"url": "https://cdn.example/test.png"}},
+            ],
+        }
+    ]
+    await runner.run("ignored", messages=messages)
+
+    kwargs = tape.tape.call_kwargs[0]
+    payload = kwargs["messages"]
+    assert isinstance(payload, list)
+    assert payload[0]["role"] == "system"
+    assert "base" in payload[0]["content"]
+    assert payload[1:] == messages
+    assert tape.messages == [{"role": "user", "content": messages[0]["content"]}, {"role": "assistant", "content": "assistant-only"}]
+    assert ("model.input.multimodal", {"provider": "openai", "images": 1}) in tape.events
+
+
+@pytest.mark.asyncio
+async def test_model_runner_rejects_multimodal_for_non_openai_provider() -> None:
+    tape = FakeTapeService(FakeTapeImpl(outputs=[]))
+    runner = ModelRunner(
+        tape=tape,  # type: ignore[arg-type]
+        router=AnySingleStepRouter(),  # type: ignore[arg-type]
+        tool_view=FakeToolView(),  # type: ignore[arg-type]
+        tools=[],
+        list_skills=lambda: [],
+        model="openrouter:test",
+        max_steps=1,
+        max_tokens=512,
+        model_timeout_seconds=90,
+        base_system_prompt="base",
+        get_workspace_system_prompt=lambda: "",
+    )
+
+    result = await runner.run(
+        "ignored",
+        messages=[{"role": "user", "content": [{"type": "text", "text": "describe"}]}],
+    )
+
+    assert result.error is not None
+    assert "image_input_unsupported" in result.error
+    assert tape.tape.calls == []

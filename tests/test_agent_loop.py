@@ -21,7 +21,8 @@ class FakeRouter:
 class FakeRunner:
     result: ModelTurnResult
 
-    async def run(self, _prompt: str) -> ModelTurnResult:
+    async def run(self, _prompt: str, *, messages=None) -> ModelTurnResult:
+        _ = messages
         return self.result
 
 
@@ -44,6 +45,7 @@ async def test_loop_short_circuit_without_model() -> None:
             UserRouteResult(
                 enter_model=False,
                 model_prompt="",
+                model_messages=None,
                 immediate_output="ok",
                 exit_requested=False,
             )
@@ -63,6 +65,7 @@ async def test_loop_runs_model_when_router_requests() -> None:
             UserRouteResult(
                 enter_model=True,
                 model_prompt="context",
+                model_messages=None,
                 immediate_output="cmd error",
                 exit_requested=False,
             )

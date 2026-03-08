@@ -47,10 +47,11 @@ async def test_get_session_prompt_wraps_text_with_notice_and_metadata() -> None:
     channel = _build_channel()
     message = _build_message(text="hello world")
 
-    session_id, prompt = await channel.get_session_prompt(message)  # type: ignore[arg-type]
+    session_id, inbound = await channel.get_session_prompt(message)  # type: ignore[arg-type]
 
     assert session_id == "telegram:123"
-    data = json.loads(prompt)
+    assert inbound.raw_text == "hello world"
+    data = json.loads(inbound.model_prompt)
     assert data["message"] == "hello world"
     assert data["chat_id"] == "123"
     assert data["message_id"] == 10
@@ -64,10 +65,11 @@ async def test_get_session_prompt_returns_raw_for_comma_command() -> None:
     channel = _build_channel()
     message = _build_message(text=",status")
 
-    session_id, prompt = await channel.get_session_prompt(message)  # type: ignore[arg-type]
+    session_id, inbound = await channel.get_session_prompt(message)  # type: ignore[arg-type]
 
     assert session_id == "telegram:123"
-    assert prompt == ",status"
+    assert inbound.raw_text == ",status"
+    assert inbound.is_command is True
 
 
 @pytest.mark.asyncio
@@ -80,8 +82,8 @@ async def test_get_session_prompt_includes_reply_metadata() -> None:
         from_user=SimpleNamespace(id=1000, username="bot", is_bot=True),
     )
 
-    _session_id, prompt = await channel.get_session_prompt(message)  # type: ignore[arg-type]
-    data = json.loads(prompt)
+    _session_id, inbound = await channel.get_session_prompt(message)  # type: ignore[arg-type]
+    data = json.loads(inbound.model_prompt)
     reply = data["reply_to_message"]
     assert reply["message_id"] == 99
     assert reply["from_user_id"] == 1000
