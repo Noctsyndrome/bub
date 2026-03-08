@@ -2,7 +2,7 @@
 
 最后更新：2026-03-08
 
-本文档记录 `lab/0.2.3-pachho` 相对 Bub `0.2.3` 基线已经完成的主要功能改造、行为变化、关键代码位置与验证方式。
+本文档记录 `lab/0.2.3-paccho` 相对 Bub `0.2.3` 基线已经完成的主要功能改造、行为变化、关键代码位置与验证方式。
 
 ## 1. Discord `message` 模式联通与基础调试
 
@@ -20,7 +20,7 @@
 
 ### 记录
 
-- `pachho/experiments/discord-message-mode-debug-and-fix.md`
+- `paccho-docs/experiments/discord-message-mode-debug-and-fix.md`
 
 ## 2. Discord 默认回复路径与终端输出对齐
 
@@ -52,7 +52,7 @@
 
 ### 记录
 
-- `pachho/experiments/discord-output-alignment/README.md`
+- `paccho-docs/experiments/discord-output-alignment/README.md`
 
 ## 3. 频道状态检查脚本
 
@@ -63,7 +63,7 @@
 
 ### 当前脚本
 
-- `pachho/scripts/health_check.py`
+- `paccho-docs/scripts/health_check.py`
 
 ### 功能
 
@@ -81,7 +81,7 @@
 
 ### 当前脚本
 
-- `pachho/scripts/test_upstream_image_url.py`
+- `paccho-docs/scripts/test_upstream_image_url.py`
 
 ### 已验证结论
 
@@ -232,5 +232,5 @@
 ## 11. 后续建议
 
 1. 为“压缩后仍超限”的图片返回更明确的用户提示
-2. 继续补充 `pachho/experiments/`，把每次改造的实验过程沉淀下来
+2. 继续补充 `paccho-docs/experiments/`，把每次改造的实验过程沉淀下来
 3. 在条件允许时，把当前行为与上游 `main` / 新架构路线做一次对照评估

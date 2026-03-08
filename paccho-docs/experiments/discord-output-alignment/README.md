@@ -200,7 +200,7 @@ uv run pytest -q tests/test_discord_output.py tests/test_model_runner.py
 
 此前的记录：
 
-- `pachho/experiments/discord-message-mode-debug-and-fix.md`
+- `paccho-docs/experiments/discord-message-mode-debug-and-fix.md`
 
 主要关注：
 

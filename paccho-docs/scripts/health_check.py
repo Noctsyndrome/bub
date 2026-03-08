@@ -26,7 +26,7 @@ def _prepare_stdout() -> None:
 
 
 def _repo_root() -> Path:
-    # 当前文件位于 <repo>/pachho/scripts/health_check.py
+    # 当前文件位于 <repo>/paccho-docs/scripts/health_check.py
     return Path(__file__).resolve().parents[1]
 
 
@@ -214,7 +214,7 @@ def build_channel_status_text() -> str:
 
 if __name__ == "__main__":
     _prepare_stdout()
-    # 默认输出频道友好文本；如需排查细节，执行: python pachho/scripts/health_check.py --verbose
+    # 默认输出频道友好文本；如需排查细节，执行: python paccho-docs/scripts/health_check.py --verbose
     if "--verbose" in sys.argv or "-v" in sys.argv:
         run_health_check()
     else:

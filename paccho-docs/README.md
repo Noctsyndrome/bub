@@ -2,7 +2,7 @@
 
 最后更新：2026-03-08
 
-`lab/0.2.3-pachho` 不再保留 `0.2.3` 基线学习材料。这个分支只承载基于 Bub `0.2.3` 的定制改造、实验记录和辅助脚本。
+`lab/0.2.3-paccho` 不再保留 `0.2.3` 基线学习材料。这个分支只承载基于 Bub `0.2.3` 的定制改造、实验记录和辅助脚本。
 
 ## 目录说明
 
@@ -25,18 +25,18 @@
 
 ## 已完成记录
 
-- `pachho/records/completed-modifications.md`
-- `pachho/experiments/discord-message-mode-debug-and-fix.md`
-- `pachho/experiments/discord-output-alignment/README.md`
+- `paccho-docs/records/completed-modifications.md`
+- `paccho-docs/experiments/discord-message-mode-debug-and-fix.md`
+- `paccho-docs/experiments/discord-output-alignment/README.md`
 
 ## 当前脚本
 
-- `pachho/scripts/health_check.py`
-- `pachho/scripts/test_discord_newline.py`
-- `pachho/scripts/test_upstream_image_url.py`
+- `paccho-docs/scripts/health_check.py`
+- `paccho-docs/scripts/test_discord_newline.py`
+- `paccho-docs/scripts/test_upstream_image_url.py`
 
 ## 使用原则
 
 - 与 `0.2.3` 基线理解相关的材料，不再在本分支内维护
 - 这里只记录“相对 0.2.3 增加了什么、为什么这样改、如何验证”
-- 任何后续定制功能，都应优先补到 `pachho/records/` 或 `pachho/experiments/`
+- 任何后续定制功能，都应优先补到 `paccho-docs/records/` 或 `paccho-docs/experiments/`
