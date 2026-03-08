@@ -1,4 +1,4 @@
-# Discord `message` 输出对齐修复记录
+﻿# Discord `message` 输出对齐修复记录
 
 最后更新：2026-03-08
 
@@ -200,7 +200,7 @@ uv run pytest -q tests/test_discord_output.py tests/test_model_runner.py
 
 此前的记录：
 
-- `learning/experiments/discord-message-mode-debug-and-fix.md`
+- `pachho/experiments/discord-message-mode-debug-and-fix.md`
 
 主要关注：
 
@@ -235,3 +235,4 @@ uv run bub message --proactive-response
 ```
 
 4. `--proactive-response` 现在被保留为高级模式，而不是默认模式。
+
