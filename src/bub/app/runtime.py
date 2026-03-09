@@ -23,6 +23,7 @@ from bub.app.jobstore import JSONJobStore
 from bub.config.settings import Settings
 from bub.core import AgentLoop, InputRouter, LoopResult, ModelRunner
 from bub.core.inbound import InboundPayload
+from bub.core.progress import ProgressCallback
 from bub.integrations.republic_client import build_llm, build_tape_store, read_workspace_agents_prompt
 from bub.skills.loader import SkillMetadata, discover_skills
 from bub.tape import TapeService, default_tape_context
@@ -47,11 +48,16 @@ class SessionRuntime:
     model_runner: ModelRunner
     tool_view: ProgressiveToolView
 
-    async def handle_input(self, text: str | InboundPayload) -> LoopResult:
+    async def handle_input(
+        self,
+        text: str | InboundPayload,
+        *,
+        progress_callback: ProgressCallback | None = None,
+    ) -> LoopResult:
         await self.tape.ensure_bootstrap_anchor()
         with self.tape.fork_tape() as tape:
             tape.context = default_tape_context({"session_id": self.session_id})
-            return await self.loop.handle_input(text)
+            return await self.loop.handle_input(text, progress_callback=progress_callback)
 
     def reset_context(self) -> None:
         """Clear volatile in-memory context while keeping the same session identity."""
@@ -124,6 +130,8 @@ class AppRuntime:
             max_steps=self.settings.max_steps,
             max_tokens=self.settings.max_tokens,
             model_timeout_seconds=self.settings.model_timeout_seconds,
+            model_hard_timeout_seconds=self.settings.model_hard_timeout_seconds,
+            model_progress_update_seconds=self.settings.model_progress_update_seconds,
             base_system_prompt=self.settings.system_prompt,
             get_workspace_system_prompt=lambda: read_workspace_agents_prompt(self.workspace),
             proactive_response=self.settings.proactive_response,
@@ -133,9 +141,15 @@ class AppRuntime:
         self._sessions[session_id] = runtime
         return runtime
 
-    async def handle_input(self, session_id: str, text: str | InboundPayload) -> LoopResult:
+    async def handle_input(
+        self,
+        session_id: str,
+        text: str | InboundPayload,
+        *,
+        progress_callback: ProgressCallback | None = None,
+    ) -> LoopResult:
         session = self.get_session(session_id)
-        task = asyncio.create_task(session.handle_input(text))
+        task = asyncio.create_task(session.handle_input(text, progress_callback=progress_callback))
         self._active_inputs.add(task)
         try:
             return await task

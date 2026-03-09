@@ -1,6 +1,6 @@
-# Pachho 已完成改造清单
+# Paccho 已完成改造清单
 
-最后更新：2026-03-08
+最后更新：2026-03-09
 
 本文档记录 `lab/0.2.3-paccho` 相对 Bub `0.2.3` 基线已经完成的主要功能改造、行为变化、关键代码位置与验证方式。
 
@@ -213,7 +213,56 @@
 - `tests/test_graceful_shutdown.py`
 - `tests/test_telegram_session_prompt.py`
 
-## 10. 当前分支的代码关注点
+## 10. 长任务状态驱动、软超时与 Discord 进度提示
+
+### 原问题
+
+- 旧逻辑把 `BUB_MODEL_TIMEOUT_SECONDS=90` 直接当作硬超时
+- 终端只能看到 `model.runner.step`，无法判断模型是否仍在处理中
+- Discord 频道侧在长任务期间没有明确进度反馈
+
+### 改造结果
+
+- `BUB_MODEL_TIMEOUT_SECONDS`
+  - 现在表示软超时阈值，默认 `90`
+- 新增 `BUB_MODEL_HARD_TIMEOUT_SECONDS`
+  - 表示模型调用最终硬上限，默认 `600`
+- 新增 `BUB_MODEL_PROGRESS_UPDATE_SECONDS`
+  - 表示进入慢任务状态后的进度更新间隔，默认 `30`
+- 模型调用改为后台任务 + 轮询观察
+- 终端新增：
+  - `model.call.start`
+  - `model.call.waiting`
+  - `model.call.finish`
+  - `model.call.error`
+  - `model.call.hard_timeout`
+- Discord 达到软超时后会发送并编辑单条状态消息
+- 成功时删除状态消息，失败或硬超时时将其更新为最终说明
+
+### 关键代码
+
+- `src/bub/config/settings.py`
+- `src/bub/core/progress.py`
+- `src/bub/core/model_runner.py`
+- `src/bub/core/agent_loop.py`
+- `src/bub/app/runtime.py`
+- `src/bub/channels/base.py`
+- `src/bub/channels/runner.py`
+- `src/bub/channels/discord.py`
+
+### 验证
+
+- `tests/test_model_runner.py`
+- `tests/test_discord_output.py`
+- `tests/test_agent_loop.py`
+- `tests/test_session_runner.py`
+
+### 记录
+
+- `paccho-docs/records/long-running-task-observability-plan.md`
+- `paccho-docs/experiments/long-running-task-observability/README.md`
+
+## 11. 当前分支的代码关注点
 
 如果后续继续扩展功能，优先从这些入口继续：
 
@@ -229,7 +278,7 @@
 - 图片处理：
   - `src/bub/channels/image_payloads.py`
 
-## 11. 后续建议
+## 12. 后续建议
 
 1. 为“压缩后仍超限”的图片返回更明确的用户提示
 2. 继续补充 `paccho-docs/experiments/`，把每次改造的实验过程沉淀下来

@@ -6,12 +6,14 @@ import asyncio
 import re
 import textwrap
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
 from loguru import logger
 from republic import Tool, ToolAutoResult
 
+from bub.core.progress import ProgressCallback, ProgressEvent
 from bub.core.router import AssistantRouteResult, InputRouter
 from bub.skills.loader import SkillMetadata
 from bub.skills.view import render_compact_skills
@@ -62,6 +64,8 @@ class ModelRunner:
         max_steps: int,
         max_tokens: int,
         model_timeout_seconds: int | None,
+        model_hard_timeout_seconds: int | None = None,
+        model_progress_update_seconds: int = 30,
         base_system_prompt: str,
         get_workspace_system_prompt: Callable[[], str],
         proactive_response: bool = False,
@@ -75,6 +79,8 @@ class ModelRunner:
         self._max_steps = max_steps
         self._max_tokens = max_tokens
         self._model_timeout_seconds = model_timeout_seconds
+        self._model_hard_timeout_seconds = model_hard_timeout_seconds if model_hard_timeout_seconds is not None else model_timeout_seconds
+        self._model_progress_update_seconds = model_progress_update_seconds
         self._base_system_prompt = base_system_prompt.strip()
         self._get_workspace_system_prompt = get_workspace_system_prompt
         self._proactive_response = proactive_response
@@ -84,7 +90,13 @@ class ModelRunner:
         """Clear volatile model-side context caches within one session."""
         self._expanded_skills.clear()
 
-    async def run(self, prompt: str, *, messages: list[dict[str, Any]] | None = None) -> ModelTurnResult:
+    async def run(
+        self,
+        prompt: str,
+        *,
+        messages: list[dict[str, Any]] | None = None,
+        progress_callback: ProgressCallback | None = None,
+    ) -> ModelTurnResult:
         state = _PromptState(prompt=prompt, multimodal_messages=messages)
         self._activate_hints(prompt)
         if messages is not None:
@@ -103,7 +115,7 @@ class ModelRunner:
             request_messages: list[dict[str, Any]] | None = None
             if state.multimodal_messages is not None:
                 request_messages = [*(await self._tape.read_messages()), *state.multimodal_messages]
-            response = await self._chat(state.prompt, messages=request_messages)
+            response = await self._chat(state.prompt, messages=request_messages, step=state.step, progress_callback=progress_callback)
             if response.error is not None:
                 state.error = response.error
                 await self._tape.append_event(
@@ -173,7 +185,14 @@ class ModelRunner:
             },
         )
 
-    async def _chat(self, prompt: str, *, messages: list[dict[str, Any]] | None = None) -> _ChatResult:
+    async def _chat(  # noqa: C901
+        self,
+        prompt: str,
+        *,
+        messages: list[dict[str, Any]] | None = None,
+        step: int,
+        progress_callback: ProgressCallback | None = None,
+    ) -> _ChatResult:
         system_prompt = self._render_system_prompt()
         provider, _, _ = self._model.partition(":")
         if messages is not None and provider.casefold() != "openai":
@@ -184,34 +203,120 @@ class ModelRunner:
                     "for this provider. Switch to an openai:* multimodal model."
                 ),
             )
+        start = asyncio.get_running_loop().time()
+        logger.info(
+            "model.call.start step={} model={} soft_timeout_seconds={} hard_timeout_seconds={}",
+            step,
+            self._model,
+            self._model_timeout_seconds,
+            self._model_hard_timeout_seconds,
+        )
+        await self._emit_progress(
+            progress_callback,
+            ProgressEvent(
+                kind="started",
+                step=step,
+                elapsed_seconds=0,
+                soft_timeout_seconds=self._model_timeout_seconds,
+                hard_timeout_seconds=self._model_hard_timeout_seconds,
+            ),
+        )
+
+        task = asyncio.create_task(self._run_model_call(prompt, system_prompt, provider, messages))
+        soft_reported = False
+        last_progress_second = 0
+
         try:
-            async with asyncio.timeout(self._model_timeout_seconds):
-                if provider.casefold() == "vertexai":
-                    output = await self._tape.run_tools_async(
-                        prompt=prompt if messages is None else None,
-                        system_prompt=system_prompt,
-                        messages=messages,
-                        max_tokens=self._max_tokens,
-                        tools=self._tools,
-                        http_options={"headers": self.DEFAULT_HEADERS},
+            while True:
+                if task.done():
+                    result = await task
+                    elapsed = max(0, int(asyncio.get_running_loop().time() - start))
+                    logger.info("model.call.finish step={} elapsed_seconds={}", step, elapsed)
+                    await self._emit_progress(
+                        progress_callback,
+                        ProgressEvent(
+                            kind="completed",
+                            step=step,
+                            elapsed_seconds=elapsed,
+                            soft_timeout_seconds=self._model_timeout_seconds,
+                            hard_timeout_seconds=self._model_hard_timeout_seconds,
+                        ),
                     )
-                else:
-                    output = await self._tape.run_tools_async(
-                        prompt=prompt if messages is None else None,
-                        system_prompt=system_prompt,
-                        messages=messages,
-                        max_tokens=self._max_tokens,
-                        tools=self._tools,
-                        extra_headers=self.DEFAULT_HEADERS,
+                    return result
+
+                elapsed = max(0, int(asyncio.get_running_loop().time() - start))
+                if self._model_hard_timeout_seconds is not None and elapsed >= self._model_hard_timeout_seconds:
+                    task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await task
+                    logger.warning(
+                        "model.call.hard_timeout step={} elapsed_seconds={} hard_timeout_seconds={}",
+                        step,
+                        elapsed,
+                        self._model_hard_timeout_seconds,
                     )
-                return _ChatResult.from_tool_auto(output)
-        except TimeoutError:
-            return _ChatResult(
-                text="",
-                error=f"model_timeout: no response within {self._model_timeout_seconds}s",
-            )
+                    await self._emit_progress(
+                        progress_callback,
+                        ProgressEvent(
+                            kind="hard_timeout",
+                            step=step,
+                            elapsed_seconds=elapsed,
+                            soft_timeout_seconds=self._model_timeout_seconds,
+                            hard_timeout_seconds=self._model_hard_timeout_seconds,
+                            message=f"model_hard_timeout: no response within {self._model_hard_timeout_seconds}s",
+                        ),
+                    )
+                    return _ChatResult(
+                        text="",
+                        error=f"model_hard_timeout: no response within {self._model_hard_timeout_seconds}s",
+                    )
+
+                should_report = False
+                event_kind: str | None = None
+                if (
+                    self._model_timeout_seconds is not None
+                    and not soft_reported
+                    and elapsed >= self._model_timeout_seconds
+                ):
+                    soft_reported = True
+                    should_report = True
+                    event_kind = "soft_timeout_reached"
+                elif (
+                    soft_reported
+                    and elapsed - last_progress_second >= self._model_progress_update_seconds
+                ):
+                    should_report = True
+                    event_kind = "progress_update"
+
+                if should_report and event_kind is not None:
+                    last_progress_second = elapsed
+                    logger.info("model.call.waiting step={} elapsed_seconds={}", step, elapsed)
+                    await self._emit_progress(
+                        progress_callback,
+                        ProgressEvent(
+                            kind=event_kind,  # type: ignore[arg-type]
+                            step=step,
+                            elapsed_seconds=elapsed,
+                            soft_timeout_seconds=self._model_timeout_seconds,
+                            hard_timeout_seconds=self._model_hard_timeout_seconds,
+                        ),
+                    )
+
+                await asyncio.sleep(1)
         except Exception as exc:
-            logger.exception("model.call.error")
+            elapsed = max(0, int(asyncio.get_running_loop().time() - start))
+            logger.exception("model.call.error step={} elapsed_seconds={}", step, elapsed)
+            await self._emit_progress(
+                progress_callback,
+                ProgressEvent(
+                    kind="failed",
+                    step=step,
+                    elapsed_seconds=elapsed,
+                    soft_timeout_seconds=self._model_timeout_seconds,
+                    hard_timeout_seconds=self._model_hard_timeout_seconds,
+                    message=str(exc),
+                ),
+            )
             if messages is not None and _looks_like_multimodal_unsupported(str(exc)):
                 return _ChatResult(
                     text="",
@@ -221,6 +326,47 @@ class ModelRunner:
                     ),
                 )
             return _ChatResult(text="", error=f"model_call_error: {exc!s}")
+        finally:
+            if not task.done():
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+
+    async def _run_model_call(
+        self,
+        prompt: str,
+        system_prompt: str,
+        provider: str,
+        messages: list[dict[str, Any]] | None,
+    ) -> _ChatResult:
+        if provider.casefold() == "vertexai":
+            output = await self._tape.run_tools_async(
+                prompt=prompt if messages is None else None,
+                system_prompt=system_prompt,
+                messages=messages,
+                max_tokens=self._max_tokens,
+                tools=self._tools,
+                http_options={"headers": self.DEFAULT_HEADERS},
+            )
+        else:
+            output = await self._tape.run_tools_async(
+                prompt=prompt if messages is None else None,
+                system_prompt=system_prompt,
+                messages=messages,
+                max_tokens=self._max_tokens,
+                tools=self._tools,
+                extra_headers=self.DEFAULT_HEADERS,
+            )
+        return _ChatResult.from_tool_auto(output)
+
+    @staticmethod
+    async def _emit_progress(progress_callback: ProgressCallback | None, event: ProgressEvent) -> None:
+        if progress_callback is None:
+            return
+        try:
+            await progress_callback(event)
+        except Exception:
+            logger.exception("model.progress_callback.error kind={} step={}", event.kind, event.step)
 
     def _render_system_prompt(self) -> str:
         blocks: list[str] = []

@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     openrouter_api_key: str | None = Field(default=None, validation_alias="OPENROUTER_API_KEY")
     max_tokens: int = Field(default=1024, ge=1)
     model_timeout_seconds: int | None = 90
+    model_hard_timeout_seconds: int | None = 600
+    model_progress_update_seconds: int = Field(default=30, ge=1)
     system_prompt: str = ""
 
     home: str | None = None

@@ -29,7 +29,11 @@ class SessionRunner:
         self._prompts.clear()
         self._running_task = None
         try:
-            result = await channel.run_prompt(self.session_id, prompt)
+            result = await channel.run_prompt(
+                self.session_id,
+                prompt,
+                progress_callback=channel.get_progress_callback(self.session_id),
+            )
             await channel.process_output(self.session_id, result)
         except Exception:
             if not channel.debounce_enabled:
@@ -81,7 +85,11 @@ class SessionRunner:
     async def _run_direct(self, channel: BaseChannel, inbound: InboundPayload, *, log_event: str) -> None:
         logger.info("{} session_id={} message={}", log_event, self.session_id, inbound.display_text)
         try:
-            result = await channel.run_prompt(self.session_id, self._prepare_inbound(channel, inbound))
+            result = await channel.run_prompt(
+                self.session_id,
+                self._prepare_inbound(channel, inbound),
+                progress_callback=channel.get_progress_callback(self.session_id),
+            )
             await channel.process_output(self.session_id, result)
         except Exception:
             if not channel.debounce_enabled:

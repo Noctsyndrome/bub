@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from bub.core.inbound import InboundPayload
 from bub.core.model_runner import ModelRunner, ModelTurnResult
+from bub.core.progress import ProgressCallback
 from bub.core.router import InputRouter
 from bub.tape.service import TapeService
 
@@ -29,7 +30,7 @@ class AgentLoop:
         self._model_runner = model_runner
         self._tape = tape
 
-    async def handle_input(self, raw: str | InboundPayload) -> LoopResult:
+    async def handle_input(self, raw: str | InboundPayload, *, progress_callback: ProgressCallback | None = None) -> LoopResult:
         route = await self._router.route_user(raw)
         if route.exit_requested:
             return LoopResult(
@@ -49,7 +50,11 @@ class AgentLoop:
                 error=None,
             )
 
-        model_result = await self._model_runner.run(route.model_prompt, messages=route.model_messages)
+        model_result = await self._model_runner.run(
+            route.model_prompt,
+            messages=route.model_messages,
+            progress_callback=progress_callback,
+        )
         await self._record_result(model_result)
         return LoopResult(
             immediate_output=route.immediate_output,

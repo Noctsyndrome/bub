@@ -1,6 +1,6 @@
-# Pachho Branch
+# Paccho Branch
 
-最后更新：2026-03-08
+最后更新：2026-03-09
 
 `lab/0.2.3-paccho` 不再保留 `0.2.3` 基线学习材料。这个分支只承载基于 Bub `0.2.3` 的定制改造、实验记录和辅助脚本。
 
@@ -22,12 +22,15 @@
 3. 多模态入站载荷与图片理解支持
 4. Discord 附件内联、压缩与 data URL 传输
 5. 上游模型兼容性验证与回归测试补齐
+6. 长任务状态驱动、软超时与 Discord 进度提示
 
 ## 已完成记录
 
 - `paccho-docs/records/completed-modifications.md`
+- `paccho-docs/records/long-running-task-observability-plan.md`
 - `paccho-docs/experiments/discord-message-mode-debug-and-fix.md`
 - `paccho-docs/experiments/discord-output-alignment/README.md`
+- `paccho-docs/experiments/long-running-task-observability/README.md`
 
 ## 当前脚本
 

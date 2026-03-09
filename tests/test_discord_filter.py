@@ -40,10 +40,10 @@ def _build_channel() -> DiscordChannel:
     return DiscordChannel(runtime)  # type: ignore[arg-type]
 
 
-def test_allow_message_when_content_contains_bub() -> None:
+def test_reject_message_when_content_only_mentions_bub_by_name() -> None:
     channel = _build_channel()
     message = DummyMessage(content="please ask Bub to check this", channel=SimpleNamespace(id=100, name="general"))
-    assert channel.is_mentioned(message) is True  # type: ignore[arg-type]
+    assert channel.is_mentioned(message) is False  # type: ignore[arg-type]
 
 
 def test_allow_message_when_thread_name_starts_with_bub() -> None:
@@ -66,8 +66,17 @@ def test_reject_unrelated_message_without_bot_context() -> None:
     assert channel.is_mentioned(message) is False  # type: ignore[arg-type]
 
 
+def test_allow_message_when_bot_is_directly_mentioned() -> None:
+    channel = _build_channel()
+    bot_user = object()
+    channel._bot = SimpleNamespace(user=bot_user)  # type: ignore[assignment]
+    message = DummyMessage(content="<@123> hello", channel=SimpleNamespace(id=104, name="general"))
+    message.mentions = [bot_user]
+    assert channel.is_mentioned(message) is True  # type: ignore[arg-type]
+
+
 def test_reject_empty_content_even_in_bub_thread() -> None:
     channel = _build_channel()
-    thread = SimpleNamespace(id=104, name="bub-help", parent=SimpleNamespace(name="forum"))
+    thread = SimpleNamespace(id=105, name="bub-help", parent=SimpleNamespace(name="forum"))
     message = DummyMessage(content="   ", channel=thread)
     assert channel.is_mentioned(message) is False  # type: ignore[arg-type]

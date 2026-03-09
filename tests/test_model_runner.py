@@ -1,9 +1,11 @@
+import asyncio
 from dataclasses import dataclass, field
 
 import pytest
 from republic import ToolAutoResult
 
 from bub.core.model_runner import TOOL_CONTINUE_PROMPT, ModelRunner
+from bub.core.progress import ProgressEvent
 from bub.core.router import AssistantRouteResult
 from bub.skills.loader import SkillMetadata
 
@@ -159,6 +161,30 @@ class FakeTapeService:
             tools=tools,
             **kwargs,
         )
+
+
+@dataclass
+class DelayedTapeImpl:
+    delay_seconds: float
+    result: ToolAutoResult | None = None
+    error: Exception | None = None
+    calls: list[tuple[str | None, str | None, int]] = field(default_factory=list)
+
+    async def run_tools_async(
+        self,
+        *,
+        prompt: str | None,
+        system_prompt: str | None,
+        max_tokens: int,
+        tools: list[object],
+        messages: list[dict[str, object]] | None = None,
+        **kwargs: object,
+    ) -> ToolAutoResult:
+        self.calls.append((prompt, system_prompt, max_tokens))
+        await asyncio.sleep(self.delay_seconds)
+        if self.error is not None:
+            raise self.error
+        return self.result or ToolAutoResult.text_result("assistant-only")
 
 
 @pytest.mark.asyncio
@@ -605,3 +631,71 @@ async def test_model_runner_rejects_multimodal_for_non_openai_provider() -> None
     assert result.error is not None
     assert "image_input_unsupported" in result.error
     assert tape.tape.calls == []
+
+
+@pytest.mark.asyncio
+async def test_model_runner_emits_progress_and_completes_after_soft_timeout() -> None:
+    tape = FakeTapeService(DelayedTapeImpl(delay_seconds=2.2, result=ToolAutoResult.text_result("assistant-only")))
+    runner = ModelRunner(
+        tape=tape,  # type: ignore[arg-type]
+        router=SingleStepRouter(),  # type: ignore[arg-type]
+        tool_view=FakeToolView(),  # type: ignore[arg-type]
+        tools=[],
+        list_skills=lambda: [],
+        model="openai:test",
+        max_steps=2,
+        max_tokens=512,
+        model_timeout_seconds=1,
+        model_hard_timeout_seconds=5,
+        model_progress_update_seconds=1,
+        base_system_prompt="base",
+        get_workspace_system_prompt=lambda: "",
+    )
+    observed: list[ProgressEvent] = []
+
+    async def _progress(event: ProgressEvent) -> None:
+        observed.append(event)
+
+    result = await runner.run("hi", progress_callback=_progress)
+
+    assert result.error is None
+    assert result.visible_text == "done"
+    assert [event.kind for event in observed] == [
+        "started",
+        "soft_timeout_reached",
+        "progress_update",
+        "completed",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_model_runner_returns_hard_timeout_after_limit() -> None:
+    tape = FakeTapeService(DelayedTapeImpl(delay_seconds=5.0, result=ToolAutoResult.text_result("assistant-only")))
+    runner = ModelRunner(
+        tape=tape,  # type: ignore[arg-type]
+        router=AnySingleStepRouter(),  # type: ignore[arg-type]
+        tool_view=FakeToolView(),  # type: ignore[arg-type]
+        tools=[],
+        list_skills=lambda: [],
+        model="openai:test",
+        max_steps=1,
+        max_tokens=512,
+        model_timeout_seconds=1,
+        model_hard_timeout_seconds=2,
+        model_progress_update_seconds=1,
+        base_system_prompt="base",
+        get_workspace_system_prompt=lambda: "",
+    )
+    observed: list[ProgressEvent] = []
+
+    async def _progress(event: ProgressEvent) -> None:
+        observed.append(event)
+
+    result = await runner.run("hi", progress_callback=_progress)
+
+    assert result.error == "model_hard_timeout: no response within 2s"
+    assert [event.kind for event in observed] == [
+        "started",
+        "soft_timeout_reached",
+        "hard_timeout",
+    ]

@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from bub.app.runtime import AppRuntime
 from bub.core.inbound import InboundPayload
+from bub.core.progress import ProgressCallback
 
 if TYPE_CHECKING:
     from bub.core import LoopResult
@@ -48,9 +49,15 @@ class BaseChannel[T](ABC):
         """Get the session id and structured inbound payload for the given message."""
         pass
 
-    async def run_prompt(self, session_id: str, prompt: str | InboundPayload) -> LoopResult:
+    async def run_prompt(
+        self,
+        session_id: str,
+        prompt: str | InboundPayload,
+        *,
+        progress_callback: ProgressCallback | None = None,
+    ) -> LoopResult:
         """Run the given prompt through the runtime and return the result."""
-        return await self.runtime.handle_input(session_id, prompt)
+        return await self.runtime.handle_input(session_id, prompt, progress_callback=progress_callback)
 
     def format_prompt(self, prompt: str) -> str:
         """Format accumulated prompt text before sending it to the runtime."""
@@ -60,3 +67,7 @@ class BaseChannel[T](ABC):
     async def process_output(self, session_id: str, output: LoopResult) -> None:
         """Process the output returned by the LLM."""
         pass
+
+    def get_progress_callback(self, session_id: str) -> ProgressCallback | None:
+        """Return an optional callback for long-running progress updates."""
+        return None

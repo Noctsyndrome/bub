@@ -18,6 +18,7 @@ from bub.channels.image_payloads import attachment_to_data_url
 from bub.channels.utils import resolve_proxy
 from bub.core.agent_loop import LoopResult
 from bub.core.inbound import InboundPayload, MediaAttachment
+from bub.core.progress import ProgressCallback, ProgressEvent
 
 
 def _message_type(message: discord.Message) -> str:
@@ -41,6 +42,12 @@ class DiscordConfig:
     proxy: str | None = None
 
 
+@dataclass
+class _ProgressState:
+    status_message: discord.Message | None = None
+    suppress_final_error: bool = False
+
+
 class DiscordChannel(BaseChannel[discord.Message]):
     """Discord adapter based on discord.py."""
 
@@ -59,6 +66,7 @@ class DiscordChannel(BaseChannel[discord.Message]):
         self._bot: commands.Bot | None = None
         self._on_receive: Callable[[discord.Message], Awaitable[None]] | None = None
         self._latest_message_by_session: dict[str, discord.Message] = {}
+        self._progress_by_session: dict[str, _ProgressState] = {}
 
     async def start(self, on_receive: Callable[[discord.Message], Awaitable[None]]) -> None:
         if not self._config.token:
@@ -172,8 +180,9 @@ class DiscordChannel(BaseChannel[discord.Message]):
         )
 
     async def process_output(self, session_id: str, output: LoopResult) -> None:
+        progress_state = self._progress_by_session.pop(session_id, _ProgressState())
         parts = [part for part in (output.immediate_output, output.assistant_output) if part]
-        if output.error:
+        if output.error and not progress_state.suppress_final_error:
             parts.append(f"Error: {output.error}")
         content = "\n\n".join(parts).strip()
         if content:
@@ -181,7 +190,7 @@ class DiscordChannel(BaseChannel[discord.Message]):
 
         if self.runtime.settings.proactive_response:
             send_parts = [part for part in (output.immediate_output,) if part]
-            if output.error:
+            if output.error and not progress_state.suppress_final_error:
                 send_parts.append(f"Error: {output.error}")
             send_content = "\n\n".join(send_parts).strip()
         else:
@@ -231,6 +240,12 @@ class DiscordChannel(BaseChannel[discord.Message]):
         async with message.channel.typing():
             await self._on_receive(message)
 
+    def get_progress_callback(self, session_id: str) -> ProgressCallback | None:
+        async def _callback(event: ProgressEvent) -> None:
+            await self._handle_progress_event(session_id, event)
+
+        return _callback
+
     async def _resolve_channel(self, session_id: str) -> discord.abc.Messageable | None:
         if self._bot is None:
             return None
@@ -268,7 +283,6 @@ class DiscordChannel(BaseChannel[discord.Message]):
 
         if (
             isinstance(message.channel, discord.DMChannel)
-            or "bub" in message.content.lower()
             or self._is_bub_scoped_thread(message)
             or message.content.startswith(f"{self._config.command_prefix}bub")
         ):
@@ -420,3 +434,67 @@ class DiscordChannel(BaseChannel[discord.Message]):
             chunks.append(remaining[:split_at].rstrip())
             remaining = remaining[split_at:].lstrip("\n")
         return [chunk for chunk in chunks if chunk]
+
+    async def _handle_progress_event(self, session_id: str, event: ProgressEvent) -> None:
+        if event.kind == "started":
+            self._progress_by_session[session_id] = _ProgressState()
+            return
+
+        state = self._progress_by_session.setdefault(session_id, _ProgressState())
+        if event.kind in {"soft_timeout_reached", "progress_update"}:
+            content = self._render_progress_message(event)
+            await self._upsert_progress_message(session_id, state, content)
+            return
+
+        if event.kind == "completed":
+            await self._delete_progress_message(state)
+            return
+
+        if event.kind in {"failed", "hard_timeout"}:
+            content = self._render_failure_message(event)
+            state.suppress_final_error = await self._upsert_progress_message(session_id, state, content)
+
+    async def _upsert_progress_message(self, session_id: str, state: _ProgressState, content: str) -> bool:
+        channel = await self._resolve_channel(session_id)
+        if channel is None:
+            logger.warning("discord.progress unresolved channel session_id={}", session_id)
+            return False
+
+        if state.status_message is not None:
+            await state.status_message.edit(content=content)
+            return True
+
+        source = self._latest_message_by_session.get(session_id)
+        reference = source.to_reference(fail_if_not_exists=False) if source is not None else None
+        kwargs: dict[str, Any] = {"content": content}
+        if reference is not None:
+            kwargs["reference"] = reference
+            kwargs["mention_author"] = False
+        sent = await channel.send(**kwargs)
+        state.status_message = cast(discord.Message, sent) if sent is not None else None
+        return state.status_message is not None
+
+    @staticmethod
+    async def _delete_progress_message(state: _ProgressState) -> None:
+        if state.status_message is None:
+            return
+        with contextlib.suppress(Exception):
+            await state.status_message.delete()
+        state.status_message = None
+        state.suppress_final_error = False
+
+    @staticmethod
+    def _render_progress_message(event: ProgressEvent) -> str:
+        return (
+            "还在处理中, 正在继续分析.\n"
+            f"已等待约 {event.elapsed_seconds} 秒, 完成后我会回复最终结果."
+        )
+
+    @staticmethod
+    def _render_failure_message(event: ProgressEvent) -> str:
+        if event.kind == "hard_timeout":
+            return (
+                "处理超时, 任务已停止.\n"
+                f"已等待约 {event.elapsed_seconds} 秒, 超过上限 {event.hard_timeout_seconds} 秒."
+            )
+        return f"处理失败: {event.message or '未知错误'}"

@@ -43,8 +43,14 @@ class _ImmediateChannel(BaseChannel[str]):
             immediate=True,
         )
 
-    async def run_prompt(self, session_id: str, prompt: str | InboundPayload) -> LoopResult:
-        _ = session_id
+    async def run_prompt(
+        self,
+        session_id: str,
+        prompt: str | InboundPayload,
+        *,
+        progress_callback=None,
+    ) -> LoopResult:
+        _ = (session_id, progress_callback)
         self.run_prompts.append(prompt.raw_text if isinstance(prompt, InboundPayload) else prompt)
         return LoopResult(
             immediate_output="",
@@ -83,8 +89,14 @@ class _DebouncedChannel(BaseChannel[str]):
             immediate=False,
         )
 
-    async def run_prompt(self, session_id: str, prompt: str | InboundPayload) -> LoopResult:
-        _ = session_id
+    async def run_prompt(
+        self,
+        session_id: str,
+        prompt: str | InboundPayload,
+        *,
+        progress_callback=None,
+    ) -> LoopResult:
+        _ = (session_id, progress_callback)
         if isinstance(prompt, InboundPayload):
             self.run_prompts.append(prompt.model_prompt)
         else:
@@ -102,8 +114,14 @@ class _DebouncedChannel(BaseChannel[str]):
 
 
 class _ImmediateFailingChannel(_ImmediateChannel):
-    async def run_prompt(self, session_id: str, prompt: str | InboundPayload) -> LoopResult:
-        _ = (session_id, prompt)
+    async def run_prompt(
+        self,
+        session_id: str,
+        prompt: str | InboundPayload,
+        *,
+        progress_callback=None,
+    ) -> LoopResult:
+        _ = (session_id, prompt, progress_callback)
         raise RuntimeError("cli failure")
 
 

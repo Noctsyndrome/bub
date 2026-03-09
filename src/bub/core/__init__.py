@@ -3,6 +3,7 @@
 from bub.core.agent_loop import AgentLoop, LoopResult
 from bub.core.inbound import InboundPayload, MediaAttachment
 from bub.core.model_runner import ModelRunner
+from bub.core.progress import ProgressCallback, ProgressEvent
 from bub.core.router import CommandExecutionResult, InputRouter, UserRouteResult
 from bub.core.types import HookContext
 
@@ -15,5 +16,7 @@ __all__ = [
     "LoopResult",
     "MediaAttachment",
     "ModelRunner",
+    "ProgressCallback",
+    "ProgressEvent",
     "UserRouteResult",
 ]

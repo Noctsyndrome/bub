@@ -21,8 +21,8 @@ class FakeRouter:
 class FakeRunner:
     result: ModelTurnResult
 
-    async def run(self, _prompt: str, *, messages=None) -> ModelTurnResult:
-        _ = messages
+    async def run(self, _prompt: str, *, messages=None, progress_callback=None) -> ModelTurnResult:
+        _ = (messages, progress_callback)
         return self.result
 
 
