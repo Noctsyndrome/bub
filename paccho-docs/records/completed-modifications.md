@@ -1,6 +1,6 @@
 # Paccho 已完成改造清单
 
-最后更新：2026-03-09
+最后更新：2026-03-10
 
 本文档记录 `lab/0.2.3-paccho` 相对 Bub `0.2.3` 基线已经完成的主要功能改造、行为变化、关键代码位置与验证方式。
 
@@ -87,6 +87,19 @@
 
 - 当前 `openai:kimi-k2.5 + BUB_API_BASE` 可以理解公开图片 URL
 - 但服务端无法稳定拉取 Discord CDN 附件 URL
+
+### 跟进结论（2026-03-10）
+
+- 在长时间无响应排查过程中，曾先后验证火山方舟 `coding/v3` 下的：
+  - `openai:kimi-k2.5`
+  - `openai:ark-code-latest`
+- 现象是：
+  - 最小文本请求并非始终完全不可用
+  - 但 Discord 实际会话里经常出现远超单次请求时长的等待，且稳定性较差
+- 最终已将上游从火山方舟迁移到阿里百炼，模型切换为：
+  - `openai:qwen3.5-35b-a3b`
+- 迁移后，Discord 简单消息和日常对话已恢复正常响应
+- 因此这轮问题的主因更接近“火山方舟接入链路 / 模型兼容性不稳定”，而不是 Bub 本地 Discord / tape 主链路整体失效
 
 ## 5. 结构化入站载荷
 
@@ -182,12 +195,23 @@
 - 再将图片转成 data URL，作为当前这轮模型请求的 `image_url`
 - data URL 只存在于本轮请求，不写入 tape / metadata / 日志历史
 
+### 跟进修正（2026-03-10）
+
+- 早期实现虽然把 Discord 附件转成 data URL 再发给上游模型，但在多模态首轮结束后，`ModelRunner._record_multimodal_turn()` 仍会把原始 `messages` 整体写回 tape
+- 结果是：内联的 `data:image/...;base64,...` 实际会进入 tape 历史，导致会话文件膨胀，也和上面的设计目标不一致
+- 现已补齐这一层：
+  - 写回 tape 前先对多模态消息做清洗
+  - 内联 `data:` 图片块替换为占位文本 `[inline image omitted from tape history]`
+  - 外部图片 URL 与普通文本块保持原样
+- 这样现在才真正满足“data URL 只存在于本轮请求，不进入 tape 历史”的约束
+
 ### 关键代码
 
 - `src/bub/channels/image_payloads.py`
 - `src/bub/channels/discord.py`
 - `src/bub/core/inbound.py`
 - `src/bub/core/router.py`
+- `src/bub/core/model_runner.py`
 
 ### 关键策略
 
@@ -200,6 +224,7 @@
 
 - `tests/test_image_payloads.py`
 - `tests/test_discord_session_prompt.py`
+- `tests/test_model_runner.py`
 
 ## 9. 当前新增/增强测试
 
@@ -262,7 +287,27 @@
 - `paccho-docs/records/long-running-task-observability-plan.md`
 - `paccho-docs/experiments/long-running-task-observability/README.md`
 
-## 11. 当前分支的代码关注点
+## 11. 上游模型迁移结论
+
+### 最终结论（2026-03-10）
+
+- 本次排障后，Paccho 当前稳定使用的上游已从火山方舟迁移到阿里百炼
+- 当前确认可用的组合为：
+  - 平台：阿里百炼
+  - 模型：`qwen3.5-35b-a3b`
+- 迁移后的直接结果：
+  - Discord 简单问候可正常返回
+  - 会话不再反复陷入长时间“仍在处理”状态
+  - notes 更新、日常聊天等常见路径已恢复可用
+
+### 备注
+
+- 这不等于此前所有问题都来自上游；Paccho 在这轮排障中仍修复了：
+  - data URL 被写入 tape 的问题
+  - 部分手工写入 tape 时的编码问题
+- 但从最终恢复效果看，上游迁移是“恢复整体可用性”的决定性步骤
+
+## 12. 当前分支的代码关注点
 
 如果后续继续扩展功能，优先从这些入口继续：
 
@@ -278,8 +323,9 @@
 - 图片处理：
   - `src/bub/channels/image_payloads.py`
 
-## 12. 后续建议
+## 13. 后续建议
 
 1. 为“压缩后仍超限”的图片返回更明确的用户提示
 2. 继续补充 `paccho-docs/experiments/`，把每次改造的实验过程沉淀下来
-3. 在条件允许时，把当前行为与上游 `main` / 新架构路线做一次对照评估
+3. 补一份“火山方舟 -> 阿里百炼”迁移记录，明确失效现象、对照测试和最终稳定配置
+4. 在条件允许时，把当前行为与上游 `main` / 新架构路线做一次对照评估
