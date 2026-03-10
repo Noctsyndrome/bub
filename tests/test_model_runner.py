@@ -607,6 +607,46 @@ async def test_model_runner_uses_multimodal_messages_for_openai_provider() -> No
 
 
 @pytest.mark.asyncio
+async def test_model_runner_does_not_persist_inline_image_data_urls_to_tape() -> None:
+    tape = FakeTapeService(FakeTapeImpl(outputs=[ToolAutoResult.text_result("assistant-only")]))
+    runner = ModelRunner(
+        tape=tape,  # type: ignore[arg-type]
+        router=SingleStepRouter(),  # type: ignore[arg-type]
+        tool_view=FakeToolView(),  # type: ignore[arg-type]
+        tools=[],
+        list_skills=lambda: [],
+        model="openai:test",
+        max_steps=1,
+        max_tokens=512,
+        model_timeout_seconds=90,
+        base_system_prompt="base",
+        get_workspace_system_prompt=lambda: "",
+    )
+
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "describe image"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAABBBB"}},
+            ],
+        }
+    ]
+    await runner.run("ignored", messages=messages)
+
+    assert tape.messages == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "describe image"},
+                {"type": "text", "text": "[inline image omitted from tape history]"},
+            ],
+        },
+        {"role": "assistant", "content": "assistant-only"},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_model_runner_rejects_multimodal_for_non_openai_provider() -> None:
     tape = FakeTapeService(FakeTapeImpl(outputs=[]))
     runner = ModelRunner(

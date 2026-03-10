@@ -397,7 +397,7 @@ class ModelRunner:
 
     async def _record_multimodal_turn(self, messages: list[dict[str, Any]], response: _ChatResult) -> None:
         for message in messages:
-            await self._tape.append_message(message)
+            await self._tape.append_message(_sanitize_multimodal_message_for_tape(message))
         await self._tape.append_event(
             "model.input.multimodal",
             {
@@ -472,6 +472,48 @@ def _count_message_images(messages: list[dict[str, Any]]) -> int:
             if isinstance(block, dict) and block.get("type") == "image_url":
                 count += 1
     return count
+
+
+def _sanitize_multimodal_message_for_tape(message: dict[str, Any]) -> dict[str, Any]:
+    sanitized = dict(message)
+    content = sanitized.get("content")
+    if not isinstance(content, list):
+        return sanitized
+
+    sanitized_blocks: list[dict[str, Any]] = []
+    for block in content:
+        if not isinstance(block, dict):
+            sanitized_blocks.append(block)
+            continue
+
+        if block.get("type") != "image_url":
+            sanitized_blocks.append(dict(block))
+            continue
+
+        image_url = block.get("image_url")
+        if not isinstance(image_url, dict):
+            sanitized_blocks.append(dict(block))
+            continue
+
+        url = image_url.get("url")
+        if isinstance(url, str) and url.startswith("data:"):
+            sanitized_blocks.append(
+                {
+                    "type": "text",
+                    "text": "[inline image omitted from tape history]",
+                }
+            )
+            continue
+
+        sanitized_blocks.append(
+            {
+                "type": "image_url",
+                "image_url": dict(image_url),
+            }
+        )
+
+    sanitized["content"] = sanitized_blocks
+    return sanitized
 
 
 def _looks_like_multimodal_unsupported(text: str) -> bool:
